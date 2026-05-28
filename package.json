@@ -13,7 +13,8 @@
   "license": "MIT",
   "pi": {
     "extensions": ["./src/index.ts"],
-    "themes": ["./themes"]
+    "themes": ["./themes"],
+    "image": "https://img.dog/file/1779930836329_t8E4k5f5v3FuxK3PnlUJEvoS.webp"
   },
   "files": [
     "src/",
