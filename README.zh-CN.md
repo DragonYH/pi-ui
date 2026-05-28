@@ -153,6 +153,7 @@ pi-ui/
 ├── README.md                 # 英文文档
 ├── README.zh-CN.md           # 中文文档
 └── package.json              # Node.js 和 pi 包清单
+```
 
 ## 🧠 工作原理
 
