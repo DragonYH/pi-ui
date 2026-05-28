@@ -33,11 +33,12 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 - 🖥️ **Custom Status Bar** — Real-time footer display showing model name, thinking level, current working directory, git branch, context usage (%), token usage (↑input ↓output), and API cost — all in one glance
 - 🎨 **Catppuccin Dark Theme** — A meticulously crafted dark theme based on [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) with 64+ color mappings covering syntax highlighting, markdown rendering, thinking levels, UI components, and export backgrounds
 - ✨ **Boxed Editor** — Unicode border editor (`╭─╮` style) replacing the default editor with elegant rounded corners
-- ⏳ **Custom Loading Animation** — Animated spinner with 8 frames (󰪞→󰪥) replacing the default working indicator, cycling at 120ms intervals
+- ⏳ **Adaptive Working Indicator** — Animated spinner with 8 frames (󰪞→󰥪) cycling at 120ms, with **3-tone adaptive coloring**: turns green during active token streaming, yellow after 10s of inactivity, red after 30s — gives you at-a-glance awareness of agent status
 - 💬 **Enhanced Message Rendering** — Custom assistant message renderer with optional expanded JSON details display
-- 🔄 **Event-Driven Updates** — UI automatically refreshes on `session_start`, `model_select`, `thinking_level_select`, and `turn_end` events
+- 🔄 **Event-Driven Updates** — UI automatically initializes on `session_start`, tracks agent lifecycle (`agent_start`/`message_update`/`agent_end`), and re-renders on `thinking_level_select` and `session_shutdown`
 - 🔌 **Zero Dependencies** — Pure peer-dependency package; no additional npm packages required
 - ⚡ **TypeScript Native** — Source code loaded directly via [jiti](https://github.com/unjs/jiti) — no build step needed
+- 🧩 **Modular Architecture** — Code split into 4 focused modules: `index.ts` (entry), `ui.ts` (UI setup), `footer.ts` (status bar rendering), `editor.ts` (BoxedEditor component)
 
 ## 📦 Installation
 
@@ -69,10 +70,10 @@ Restart pi. You should see the custom footer appear at the bottom of your termin
 
 Once installed, pi-ui works **completely automatically** — no configuration required:
 
-1. **On session start** — the custom UI initializes: footer, editor, spinner, and theme are all applied
-2. **On model switch** — the footer updates to show the new model name
-3. **On thinking level change** — the thinking level indicator in the footer updates
-4. **After each conversation** (`turn_end`) — token usage and cost statistics refresh automatically
+1. **On session start** — the custom UI initializes: footer, editor, spinner, message renderer
+2. **On agent activity** (`agent_start` → `message_update` → `agent_end`) — the working indicator adapts its color in real-time, and the footer stats refresh
+3. **On thinking level change** (`thinking_level_select`) — the thinking level indicator in the footer updates
+4. **On session shutdown** (`session_shutdown`) — all working timers are cleaned up gracefully
 
 ### Status Bar Layout
 
@@ -97,7 +98,15 @@ The default message editor is replaced with a **BoxedEditor** that uses Unicode 
 
 ### Working Indicator
 
-The default "Working..." indicator is replaced with an animated **spinner sequence** (󰪞 󰪟 󰪠 󰪡 󰪢 󰪣 󰪤 󰪥), cycling every 120ms with alternating accent/muted colors.
+The default "Working..." indicator is replaced with an animated **spinner sequence** (󰪞 󰪟 󰪠 󰪡 󰪢 󰪣 󰪤 󰪥) cycling every 120ms. The spinner features **3-tone adaptive coloring**:
+
+| Tone  | Condition                        | Meaning         |
+|-------|----------------------------------|-----------------|
+| 🟢 Green | Last token received < 10s ago    | Active streaming |
+| 🟡 Yellow | 10–30s since last token          | Thinking / idle |
+| 🔴 Red    | > 30s since last token           | Possible stall  |
+
+The indicator starts on `agent_start`, resets on each incoming token (`message_update`), and stops on `agent_end`, giving you real-time awareness of agent activity.
 
 ## 🎨 Themes
 
@@ -131,7 +140,10 @@ See the [pi themes documentation](https://github.com/earendil-works/pi/blob/main
 ```
 pi-ui/
 ├── src/
-│   └── index.ts              # Extension entry point — footer, BoxedEditor, working indicator, message renderer
+│   ├── index.ts              # Extension entry — registers events
+│   ├── ui.ts                 # UI setup — footer, BoxedEditor, working indicator, message renderer
+│   ├── footer.ts             # Footer rendering — model, usage, context, git branch
+│   └── editor.ts             # BoxedEditor component — Unicode border decoration
 ├── themes/
 │   └── catppuccin-dark.json  # Catppuccin Mocha dark theme (64+ color mappings)
 ├── .github/
@@ -160,23 +172,30 @@ pi-ui/
 │  └────────────────────────────────────────────────────────┘  │
 │                                                              │
 │  ┌── Extension: pi-ui ──────────────────────────────────┐  │
-│  │  session_start  ──►  setupCustomUI()  ──►  footer    │  │
-│  │                         editor                        │  │
-│  │                         spinner                       │  │
-│  │                         messageRenderer               │  │
-│  │  model_select  ──►  rerenderFooter()                  │  │
-│  │  thinking_level_select ──►  rerenderFooter()          │  │
-│  │  turn_end      ──►  rerenderFooter()                  │  │
+│  │  session_start      ──►  setupCustomUI()  ──►  footer  │  │
+│  │                                editor                  │  │
+│  │                                spinner                 │  │
+│  │                                messageRenderer         │  │
+│  │  agent_start        ──►  startWorkingTimer()           │  │
+│  │  message_update     ──►  reset token timestamp         │  │
+│  │  agent_end          ──►  stopWorkingTimer()            │  │
+│  │                     ──►  rerenderFooter()              │  │
+│  │  thinking_level_select ──►  rerenderFooter()            │  │
+│  │  session_shutdown   ──►  clearWorkingIndicatorTimer()  │  │
 │  └───────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ### Events Handled
 
-- **`session_start`** — initializes custom UI components (footer, editor, working indicator, message renderer)
-- **`model_select`** — re-renders footer when you switch models
-- **`thinking_level_select`** — updates the thinking level badge in the footer
-- **`turn_end`** — refreshes token usage and cost statistics after each conversation turn
+| Event | Handler | Description |
+|-------|---------|-------------|
+| `session_start` | `setupCustomUI()` | Registers footer, BoxedEditor, working indicator, and message renderer |
+| `session_shutdown` | `clearWorkingIndicatorTimer()` | Cleans up timers on session end |
+| `agent_start` | `startWorkingTimer()` | Begins the adaptive working indicator (green) and re-renders footer |
+| `message_update` | reset `lastTokenTime` | Updates token timestamp; the 500ms interval timer adjusts the spinner color accordingly |
+| `agent_end` | `stopWorkingTimer()` | Stops the working indicator and re-renders footer |
+| `thinking_level_select` | `rerenderFooter()` | Updates the thinking level label in the footer |
 
 ## 🛠️ For Developers
 
