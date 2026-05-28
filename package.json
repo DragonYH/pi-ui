@@ -1,6 +1,6 @@
 {
   "name": "@rokiy/pi-ui",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Custom pi terminal UI with themes, layout, and message rendering",
   "type": "module",
   "peerDependencies": {
@@ -9,11 +9,17 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
   "pi": {
-    "extensions": ["./src/index.ts"],
-    "themes": ["./themes"],
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "themes": [
+      "./themes"
+    ],
     "image": "https://img.dog/file/1779930836329_t8E4k5f5v3FuxK3PnlUJEvoS.webp"
   },
   "files": [
