@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.dog/file/1779930836329_t8E4k5f5v3FuxK3PnlUJEvoS.webp" alt="pi-ui preview" width="600">
+  <img src="https://img.dog/file/1779944542014_image.webp" alt="pi-ui preview" width="600">
 </p>
 
 ---
