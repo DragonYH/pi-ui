@@ -3,7 +3,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { BoxedEditor } from "./editor.ts";
 import { collectUsage, buildCoreFooterSections, renderCoreFooterLine, renderExtensionStatusLine } from "./footer.ts";
 
-export const WORKING_INDICATOR_FRAMES = ["󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"] as const;
+export const WORKING_INDICATOR_FRAMES = ["󰄰", "󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"] as const;
 
 let workingIndicatorTimer: ReturnType<typeof setInterval> | undefined;
 let lastTokenTime = 0;
@@ -92,7 +92,7 @@ export function setupCustomUI(pi: ExtensionAPI, ctx: ExtensionContext): void {
 
       return lines;
     },
-    invalidate() {},
+    invalidate() { },
   }));
 
   // Defer initial indicator so SDK's resetExtensionUI() (which calls
