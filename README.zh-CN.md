@@ -191,10 +191,12 @@ pi-ui/
 |------|----------|------|
 | `session_start` | `setupCustomUI()` | 注册状态栏、BoxedEditor、工作指示器和消息渲染器 |
 | `session_shutdown` | `clearWorkingIndicatorTimer()` | 会话结束时清理计时器 |
-| `agent_start` | `startWorkingTimer()` | 启动自适应工作指示器（绿色）并刷新状态栏 |
-| `message_update` | 重置 `lastTokenTime` | 更新 token 时间戳；500ms 间隔定时器据此调整旋转颜色 |
-| `agent_end` | `stopWorkingTimer()` | 停止工作指示器并刷新状态栏 |
+| `agent_start` | `startWorkingTimer()` | 启动自适应工作指示器（绿色），开始计时；刷新状态栏 |
+| `message_update` | 重置 `lastTokenTime` | 更新 token 时间戳；100ms 间隔定时器据此调整旋转颜色和耗时显示 |
+| `message_end` | 追加用量统计 | 将每次请求的 token/费用/耗时统计注入 assistant 消息内容用于展示 |
+| `agent_end` | `stopWorkingTimer()` | 停止工作指示器，2 秒后恢复默认消息，刷新状态栏 |
 | `thinking_level_select` | `rerenderFooter()` | 更新状态栏中的思考级别标签 |
+| `context` | 剥离用量统计 | 在消息发送给 LLM 前过滤掉用量统计文本块，保持上下文干净 |
 
 ## 🛠️ 开发者指南
 

@@ -200,7 +200,7 @@ function themeSpacer(): string {
   return ' ';
 }
 
-function formatTokens(count: number): string {
+export function formatTokens(count: number): string {
   if (count < 1000) {
     return `${count}`;
   }

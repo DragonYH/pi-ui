@@ -33,9 +33,9 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 - 🖥️ **Custom Status Bar** — Real-time footer display showing model name, thinking level, current working directory, git branch, context usage (%), token usage (↑input ↓output), and API cost — all in one glance
 - 🎨 **Catppuccin Dark Theme** — A meticulously crafted dark theme based on [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) with 64+ color mappings covering syntax highlighting, markdown rendering, thinking levels, UI components, and export backgrounds
 - ✨ **Boxed Editor** — Unicode border editor (`╭─╮` style) replacing the default editor with elegant rounded corners
-- ⏳ **Adaptive Working Indicator** — Animated spinner with 8 frames (󰪞→󰥪) cycling at 120ms, with **3-tone adaptive coloring**: turns green during active token streaming, yellow after 10s of inactivity, red after 30s — gives you at-a-glance awareness of agent status
-- 💬 **Enhanced Message Rendering** — Custom assistant message renderer with optional expanded JSON details display
-- 🔄 **Event-Driven Updates** — UI automatically initializes on `session_start`, tracks agent lifecycle (`agent_start`/`message_update`/`agent_end`), and re-renders on `thinking_level_select` and `session_shutdown`
+- ⏳ **Adaptive Working Indicator** — Animated spinner (󰪞→󰪥) at 120ms with **3-tone adaptive coloring** (green→yellow→red based on token recency). Now also shows **real-time elapsed time** (`Working... 󰅐 12.3s`) refreshed every 100ms — at-a-glance awareness of agent status and how long it's been thinking.
+- 📊 **Per-Message Usage Stats** — After each assistant reply, a **token/cost/duration summary** is displayed inline (`↑271 ↓50 · $0.0017 · 󰅐 4.1s`) with a matching-width separator line. Stats are displayed only — **automatically stripped from LLM context** to avoid polluting the conversation.
+- 💬 **Enhanced Message Rendering** — Custom assistant message renderer with optional expanded JSON details display; usage stats injected via `message_end` event and filtered via `context` event
 - 🔌 **Zero Dependencies** — Pure peer-dependency package; no additional npm packages required
 - ⚡ **TypeScript Native** — Source code loaded directly via [jiti](https://github.com/unjs/jiti) — no build step needed
 - 🧩 **Modular Architecture** — Code split into 4 focused modules: `index.ts` (entry), `ui.ts` (UI setup), `footer.ts` (status bar rendering), `editor.ts` (BoxedEditor component)
@@ -192,10 +192,12 @@ pi-ui/
 |-------|---------|-------------|
 | `session_start` | `setupCustomUI()` | Registers footer, BoxedEditor, working indicator, and message renderer |
 | `session_shutdown` | `clearWorkingIndicatorTimer()` | Cleans up timers on session end |
-| `agent_start` | `startWorkingTimer()` | Begins the adaptive working indicator (green) and re-renders footer |
-| `message_update` | reset `lastTokenTime` | Updates token timestamp; the 500ms interval timer adjusts the spinner color accordingly |
-| `agent_end` | `stopWorkingTimer()` | Stops the working indicator and re-renders footer |
+| `agent_start` | `startWorkingTimer()` | Begins the adaptive working indicator (green) with elapsed time counter; re-renders footer |
+| `message_update` | reset `lastTokenTime` | Updates token timestamp; the 100ms interval timer adjusts the spinner color and elapsed time accordingly |
+| `message_end` | append usage stats | Injects per-message token/cost/duration stats into assistant message content for display |
+| `agent_end` | `stopWorkingTimer()` | Stops the working indicator, clears the working message after 2s, and re-renders footer |
 | `thinking_level_select` | `rerenderFooter()` | Updates the thinking level label in the footer |
+| `context` | strip usage stats | Filters out the usage stats text blocks before messages are sent to the LLM, keeping context clean |
 
 ## 🛠️ For Developers
 
