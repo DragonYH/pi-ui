@@ -18,8 +18,6 @@ const STATUS_ICONS = {
 } as const;
 
 let agentStartTime = 0;
-let currentRequestInput = 0;
-let currentRequestOutput = 0;
 let activeWelcomeOverlay: WelcomeOverlayController | undefined;
 
 export function clearWelcomeOverlay(): void {
@@ -66,8 +64,6 @@ export function clearWorkingIndicatorTimer(): void {
   lastTokenTime = 0;
   currentWorkingTone = undefined;
   agentStartTime = 0;
-  currentRequestInput = 0;
-  currentRequestOutput = 0;
 }
 
 export function registerMessageRenderer(pi: ExtensionAPI): void {
@@ -125,6 +121,7 @@ export function setupCustomUI(
     try {
       ctx.ui.setWorkingMessage(`Working...   ${STATUS_ICONS.clock} ${elapsedStr}`);
     } catch {
+      // ctx may be stale after session replacement or reload — safely ignore.
     }
   };
 
@@ -181,25 +178,13 @@ export function setupCustomUI(
     }
     welcomeOverlay?.dispose();
     agentStartTime = Date.now();
-    currentRequestInput = 0;
-    currentRequestOutput = 0;
     startWorkingTimer();
     rerenderFooter?.();
   });
 
-  // message_update = token 到达 → 更新时间戳，提取实时 token 用量
-  pi.on('message_update', async (event: any) => {
+  // message_update = token 到达 → 更新时间戳
+  pi.on('message_update', async () => {
     lastTokenTime = Date.now();
-    // Extract token usage from the streaming event's partial message,
-    // falling back to the agent message (some APIs report usage on the message itself)
-    const partial = event?.assistantMessageEvent?.partial;
-    if (partial?.usage?.input > 0 || partial?.usage?.output > 0) {
-      currentRequestInput = partial.usage.input;
-      currentRequestOutput = partial.usage.output;
-    } else if (event?.message?.usage?.input > 0 || event?.message?.usage?.output > 0) {
-      currentRequestInput = event.message.usage.input;
-      currentRequestOutput = event.message.usage.output;
-    }
   });
 
   // agent_end = agent 处理完毕（streaming 结束）→ 停止计时
@@ -212,7 +197,7 @@ export function setupCustomUI(
   });
 
   // message_end = 单条消息完成 → 追加消耗统计到 assistant 消息末尾
-  pi.on('message_end', async (event: any) => {
+  pi.on('message_end', async (event) => {
     const msg = event?.message;
     if (!msg || msg.role !== 'assistant') return;
     const usage = msg?.usage;
@@ -232,18 +217,18 @@ export function setupCustomUI(
   });
 
   // context = LLM 调用前过滤上下文 → 剥离 usage stats，避免污染 LLM 上下文
-  pi.on('context', async (event: any) => {
+  pi.on('context', async (event) => {
     const messages = event?.messages;
     if (!Array.isArray(messages)) return {};
 
     // Stats block format: \n───\n↑...
     const STATS_RE = /^\n\u2500+\n↑/;
 
-    const filtered = messages.map((msg: any) => {
+    const filtered = messages.map((msg) => {
       if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return msg;
       return {
         ...msg,
-        content: msg.content.filter((block: any) => {
+        content: msg.content.filter((block) => {
           if (block.type !== 'text') return true;
           return !STATS_RE.test(block.text || '');
         }),
