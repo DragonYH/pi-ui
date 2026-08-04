@@ -1,7 +1,8 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { BoxedEditor } from "./editor.ts";
 import { collectUsage, buildCoreFooterSections, renderCoreFooterLine, renderExtensionStatusLine, formatTokens } from "./footer.ts";
+import { createWelcomeOverlay, shouldShowWelcome, type WelcomeOverlayController } from "./welcome.ts";
 
 export const WORKING_INDICATOR_FRAMES = ["󰄰", "󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"] as const;
 
@@ -19,6 +20,18 @@ const STATUS_ICONS = {
 let agentStartTime = 0;
 let currentRequestInput = 0;
 let currentRequestOutput = 0;
+let activeWelcomeOverlay: WelcomeOverlayController | undefined;
+
+export function clearWelcomeOverlay(): void {
+  const overlay = activeWelcomeOverlay;
+  activeWelcomeOverlay = undefined;
+
+  try {
+    overlay?.dispose();
+  } catch {
+    // A replaced session may already have disposed the overlay.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,12 +82,17 @@ export function registerMessageRenderer(pi: ExtensionAPI): void {
   });
 }
 
-export function setupCustomUI(pi: ExtensionAPI, ctx: ExtensionContext): void {
+export function setupCustomUI(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  sessionStartReason: SessionStartEvent["reason"],
+): void {
   // 清理前一个 session 可能遗留的定时器（定时器是 module 级共享的）
   clearInterval(workingIndicatorTimer);
   workingIndicatorTimer = undefined;
   lastTokenTime = 0;
   currentWorkingTone = undefined;
+  clearWelcomeOverlay();
 
   let rerenderFooter: (() => void) | undefined;
 
@@ -143,12 +161,25 @@ export function setupCustomUI(pi: ExtensionAPI, ctx: ExtensionContext): void {
     invalidate() { },
   }));
 
+  const welcomeOverlay = shouldShowWelcome(ctx, sessionStartReason)
+    ? createWelcomeOverlay(ctx)
+    : undefined;
+
+  if (welcomeOverlay) {
+    activeWelcomeOverlay = welcomeOverlay;
+    welcomeOverlay.mount();
+  }
+
   // Defer initial indicator so SDK's resetExtensionUI() (which calls
   // setWorkingIndicator() with no args) has already run before we override.
   setTimeout(() => applyWorkingIndicator('green'), 0);
 
   // agent_start = 用户发消息、agent 开始处理 → 启动计时
   pi.on('agent_start', async () => {
+    if (activeWelcomeOverlay === welcomeOverlay) {
+      activeWelcomeOverlay = undefined;
+    }
+    welcomeOverlay?.dispose();
     agentStartTime = Date.now();
     currentRequestInput = 0;
     currentRequestOutput = 0;
