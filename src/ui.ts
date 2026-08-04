@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendi
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { BoxedEditor } from "./editor.ts";
 import { collectUsage, buildCoreFooterSections, renderCoreFooterLine, renderExtensionStatusLine, formatTokens } from "./footer.ts";
-import { createWelcomeWidget, shouldShowWelcome, type WelcomeWidgetController } from "./welcome.ts";
+import { installWelcomeHeader } from "./welcome.ts";
 
 export const WORKING_INDICATOR_FRAMES = ["󰄰", "󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"] as const;
 
@@ -18,18 +18,6 @@ const STATUS_ICONS = {
 } as const;
 
 let agentStartTime = 0;
-let activeWelcomeWidget: WelcomeWidgetController | undefined;
-
-export function clearWelcomeWidget(): void {
-  const widget = activeWelcomeWidget;
-  activeWelcomeWidget = undefined;
-
-  try {
-    widget?.dispose();
-  } catch {
-    // A replaced session may already have disposed the widget.
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,7 +76,6 @@ export function setupCustomUI(
   workingIndicatorTimer = undefined;
   lastTokenTime = 0;
   currentWorkingTone = undefined;
-  clearWelcomeWidget();
 
   let rerenderFooter: (() => void) | undefined;
 
@@ -158,14 +145,8 @@ export function setupCustomUI(
     invalidate() { },
   }));
 
-  const welcomeWidget = shouldShowWelcome(ctx, sessionStartReason)
-    ? createWelcomeWidget(ctx)
-    : undefined;
-
-  if (welcomeWidget) {
-    activeWelcomeWidget = welcomeWidget;
-    welcomeWidget.mount();
-  }
+  // 自定义欢迎屏：替换核心 header 为左右双列布局（左侧 logo + 右侧原有欢迎内容）
+  installWelcomeHeader(ctx, sessionStartReason);
 
   // Defer initial indicator so SDK's resetExtensionUI() (which calls
   // setWorkingIndicator() with no args) has already run before we override.
@@ -173,10 +154,6 @@ export function setupCustomUI(
 
   // agent_start = 用户发消息、agent 开始处理 → 启动计时
   pi.on('agent_start', async () => {
-    if (activeWelcomeWidget === welcomeWidget) {
-      activeWelcomeWidget = undefined;
-      welcomeWidget?.dispose();
-    }
     agentStartTime = Date.now();
     startWorkingTimer();
     rerenderFooter?.();

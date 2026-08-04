@@ -1,25 +1,56 @@
-import { existsSync } from "node:fs";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import {
+  getAgentDir,
+  VERSION,
+  type ExtensionContext,
+  type SessionStartEvent,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
+import {
+  type Component,
+  type Container,
+  type TUI,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 
-type WelcomeTheme = ExtensionContext["ui"]["theme"];
-type WelcomeTone = "accent" | "muted" | "dim";
+// ---------------------------------------------------------------------------
+// 常量
+// ---------------------------------------------------------------------------
 
-export type WelcomeVariant = "wide" | "narrow" | "compact";
+// 双列布局中左侧品牌列（logo 列）的最小宽度，宽屏时按总宽 1/3 放大
+export const BRAND_COLUMN_WIDTH = 14;
+// 品牌列与内容列之间的间距
+export const GRID_COLUMN_GAP = 3;
+// 内容列的最小可用宽度，低于该宽度时降级为单列堆叠
+export const MIN_RESOURCE_COLUMN_WIDTH = 44;
+// 窄屏单列布局的最大列宽
+export const MAX_STACKED_COLUMN_WIDTH = 80;
+// 列表自动多列时每列最多行数
+export const MAX_LIST_ROWS_PER_COLUMN = 6;
+// 多列列表中每列的最小宽度
+export const MIN_LIST_COLUMN_WIDTH = 22;
+// 多列列表中列与列的间距
+export const LIST_COLUMN_GAP = 2;
+// 资源面板轮询间隔
+export const RESOURCE_POLL_INTERVAL_MS = 50;
+// 资源面板捕获的最大重试次数
+export const MAX_RESOURCE_RETRIES = 3;
+// 核心 loaded-resources 面板在 TUI children 中的下标
+export const RESOURCE_PANEL_INDEX = 1;
+// 挂在 TUI 上防止重复桥接的标记
+export const RESOURCE_BRIDGE_KEY = "@rokiy/pi-ui:welcome:resource-bridge";
 
-export interface WelcomeLine {
-  text: string;
-  tone: WelcomeTone;
-}
+// 核心 compact 模式下的快捷键提示行。工厂函数拿不到 keybindings，与核心默认保持一致。
+const KEYBINDING_HINTS_LINE =
+  "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more";
+// 核心的 onboarding 提示行
+const ONBOARDING_LINE =
+  "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.";
 
-export const WIDE_WELCOME_BREAKPOINT = 60;
-export const NARROW_WELCOME_BREAKPOINT = 32;
-// This is only a height gate; widgets do not render a matching spacer.
-export const WELCOME_BOTTOM_RESERVE = 5;
-export const WELCOME_WIDGET_KEY = "@rokiy/pi-ui:welcome";
-
-const MINIMUM_WELCOME_WIDTH = 8;
+// 现有欢迎屏 logo（6 行块状 "pi" 字符画）
 const WIDE_LOGO = [
   "██████╗  ██╗",
   "██╔══██╗ ██║",
@@ -29,214 +60,1096 @@ const WIDE_LOGO = [
   "╚═╝      ╚═╝",
 ] as const;
 
-function centerLine(line: string, width: number): string {
-  const truncated = truncateToWidth(line, width);
-  const padding = Math.max(0, Math.floor((width - visibleWidth(truncated)) / 2));
-  return `${" ".repeat(padding)}${truncated}`;
+// ---------------------------------------------------------------------------
+// 资源解析（桥接核心 loaded-resources 面板）
+// ---------------------------------------------------------------------------
+
+type WelcomeSection = "Context" | "Skills" | "Prompts" | "Extensions" | "Themes";
+const WELCOME_SECTIONS: readonly WelcomeSection[] = [
+  "Context",
+  "Skills",
+  "Prompts",
+  "Extensions",
+  "Themes",
+];
+
+export interface WelcomeResources {
+  context: string[];
+  skills: string[];
+  prompts: string[];
+  themes: string[];
+  extensions: string[];
+  /** Extensions loaded from npm or git packages. */
+  packageExtensions?: string[];
+  /** Local extension entry points outside Pi's extension directories. */
+  sourceExtensions?: string[];
+  /** @deprecated Use packageExtensions. */
+  vendoredExtensions?: string[];
 }
 
-export function getWelcomeVariant(width: number): WelcomeVariant {
-  if (width >= WIDE_WELCOME_BREAKPOINT) return "wide";
-  if (width >= NARROW_WELCOME_BREAKPOINT) return "narrow";
-  return "compact";
+interface CollapsedTextComponent extends Component {
+  getCollapsedText?: () => string;
+  getExpandedText?: () => string;
 }
 
-export function buildWelcomeLines(width: number): WelcomeLine[] {
-  switch (getWelcomeVariant(width)) {
-    case "wide":
-      return [
-        ...WIDE_LOGO.map<WelcomeLine>((text) => ({ text, tone: "accent" })),
-        { text: "", tone: "dim" },
-        { text: "A quiet place to make things.", tone: "muted" },
-        { text: "Type a message to begin", tone: "dim" },
-      ];
-    case "narrow":
-      return [
-        { text: "pi", tone: "accent" },
-        { text: "Type a message to begin", tone: "muted" },
-      ];
-    case "compact":
-      return [
-        { text: "pi", tone: "accent" },
-        { text: "Type to begin", tone: "dim" },
-      ];
+interface ResourcePanel extends Component {
+  children: Component[];
+}
+
+interface ResourceBridge {
+  panel: ResourcePanel;
+  originalIndex: number;
+}
+
+interface ResourcePanelSnapshot {
+  resourceText: string;
+  expandedExtensionsText?: string;
+  requiresNativePanel: boolean;
+}
+
+type BridgeTui = TUI & {
+  [RESOURCE_BRIDGE_KEY]?: ResourceBridge;
+};
+
+// 用 fromCharCode 构造 ESC 控制字符，避免 eslint no-control-regex
+const ANSI_ESCAPE_RE = new RegExp(
+  `${String.fromCharCode(27)}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])`,
+  "g",
+);
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE_RE, "");
+}
+
+function isResourcePanel(
+  component: Component | undefined,
+): component is ResourcePanel {
+  if (!component || typeof component !== "object") return false;
+  return Array.isArray((component as Partial<Container>).children);
+}
+
+function getSectionHeading(text: string): string | undefined {
+  return stripAnsi(text.split("\n", 1)[0] ?? "")
+    .trim()
+    .match(/^\[([^\]]+)\]$/)?.[1];
+}
+
+function inspectResourcePanel(panel: ResourcePanel): ResourcePanelSnapshot {
+  const sections: string[] = [];
+  let expandedExtensionsText: string | undefined;
+
+  for (const child of panel.children) {
+    const collapsible = child as CollapsedTextComponent;
+    if (typeof collapsible.getCollapsedText === "function") {
+      const text = collapsible.getCollapsedText();
+      const heading = getSectionHeading(text);
+      if (WELCOME_SECTIONS.some((section) => section === heading)) {
+        sections.push(text);
+        if (
+          heading === "Extensions" &&
+          typeof collapsible.getExpandedText === "function"
+        ) {
+          expandedExtensionsText = collapsible.getExpandedText();
+        }
+      } else {
+        // 未知的原生区段可能包含可操作信息，恢复原生面板而不是冒险猜测。
+        return { resourceText: "", requiresNativePanel: true };
+      }
+      continue;
+    }
+
+    const hasVisibleContent = child
+      .render(1_000)
+      .some((line) => stripAnsi(line).trim().length > 0);
+    if (hasVisibleContent) {
+      return { resourceText: "", requiresNativePanel: true };
+    }
   }
+
+  return {
+    resourceText: sections.join("\n"),
+    ...(expandedExtensionsText ? { expandedExtensionsText } : {}),
+    requiresNativePanel: false,
+  };
 }
 
-export function renderWelcomeLines(width: number, theme: WelcomeTheme): string[] {
-  if (!Number.isFinite(width)) return [];
+function splitList(body: string[]): string[] {
+  return body
+    .join(" ")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
-  const safeWidth = Math.max(0, Math.floor(width));
-  if (safeWidth === 0) return [];
+export function normalizeExtensionName(label: string): string {
+  let name = label.trim().replace(/^npm:/, "").replace(/\\/g, "/");
+  // Windows drive letters use a colon as part of the path, not as the
+  // separator between a package name and its extension entry point.
+  const packageSeparator = /^[A-Za-z]:\//.test(name) ? -1 : name.indexOf(":");
+  const isPackageLabel = packageSeparator !== -1;
+  if (isPackageLabel) name = name.slice(0, packageSeparator);
 
-  return buildWelcomeLines(safeWidth).map(({ text, tone }) => {
-    const styled = text ? theme.fg(tone, text) : "";
-    return centerLine(styled, safeWidth);
+  name = name.replace(/\/$/, "");
+  if (!isPackageLabel && !name.startsWith("@")) {
+    if (/\/(?:index)\.(?:[cm]?[jt]s)$/.test(name)) return name;
+    const segments = name.split("/").filter(Boolean);
+    const fileName = segments.pop() ?? name;
+    name = fileName;
+  }
+  return name.replace(/\.(?:[cm]?[jt]s)$/, "");
+}
+
+function isSelfExtension(name: string): boolean {
+  const normalized = name.replace(/\\/g, "/");
+  return (
+    name === "pi-ui" ||
+    name === "@rokiy/pi-ui" ||
+    name === "src" ||
+    normalized === "./src/index.ts" ||
+    normalized.endsWith("/src/index.ts") ||
+    normalized.endsWith("/src")
+  );
+}
+
+export function sortExtensionNames(names: string[]): string[] {
+  return [...names].sort((left, right) => {
+    const scopeOrder =
+      Number(left.startsWith("@")) - Number(right.startsWith("@"));
+    return scopeOrder || left.localeCompare(right);
   });
 }
 
-export function isWelcomeVisible(termWidth: number, termHeight: number): boolean {
-  if (!Number.isFinite(termWidth) || !Number.isFinite(termHeight)) return false;
-
-  const width = Math.floor(termWidth);
-  const height = Math.floor(termHeight);
-  const contentHeight = buildWelcomeLines(width).length;
-  return width >= MINIMUM_WELCOME_WIDTH && height >= contentHeight + WELCOME_BOTTOM_RESERVE + 1;
+function unique(items: string[]): string[] {
+  return [...new Set(items.filter(Boolean))];
 }
 
-type WelcomeSessionManager = {
-  getEntries?: () => readonly unknown[];
-  getSessionFile?: () => string | null | undefined;
-  getHeader?: () => { parentSession?: unknown } | null | undefined;
-};
-
-function isBootstrapEntry(entry: unknown): boolean {
-  if (typeof entry !== "object" || entry === null) return false;
-  const type = (entry as { type?: unknown }).type;
-  return type === "model_change" || type === "thinking_level_change";
+interface ExtensionGroups {
+  localExtensions: string[];
+  packageExtensions: string[];
+  sourceExtensions: string[];
 }
 
-function isFreshStartupSession(ctx: ExtensionContext): boolean {
-  const sessionManager = ctx.sessionManager as unknown as WelcomeSessionManager | undefined;
-  if (!sessionManager
-    || typeof sessionManager.getEntries !== "function"
-    || typeof sessionManager.getSessionFile !== "function"
-    || typeof sessionManager.getHeader !== "function") {
-    return false;
-  }
-
-  const sessionFile = sessionManager.getSessionFile();
-  if (sessionFile !== undefined && sessionFile !== null) {
-    if (typeof sessionFile !== "string") return false;
-    if (sessionFile.length > 0 && existsSync(sessionFile)) return false;
-  }
-
-  const header = sessionManager.getHeader();
-  if (header === null || typeof header !== "object" || header.parentSession !== undefined) {
-    return false;
-  }
-
-  const entries = sessionManager.getEntries();
-  return Array.isArray(entries) && entries.every(isBootstrapEntry);
+function isPackageSource(label: string): boolean {
+  return label.startsWith("npm:") || label.startsWith("git:");
 }
 
-export function shouldShowWelcome(
-  ctx: ExtensionContext,
-  sessionStartReason: "startup" | "reload" | "new" | "resume" | "fork",
-): boolean {
-  if (sessionStartReason !== "startup" || !ctx.hasUI) return false;
+function normalizePackageSource(label: string): string {
+  return label.replace(/^(?:npm|git):/, "");
+}
 
+interface GitPackageSource {
+  label: string;
+  revision: string | undefined;
+}
+
+function splitGitRevision(pathWithRevision: string): {
+  path: string;
+  revision: string | undefined;
+} {
+  const separator = pathWithRevision.indexOf("@");
+  if (separator === -1) return { path: pathWithRevision, revision: undefined };
+  return {
+    path: pathWithRevision.slice(0, separator),
+    revision: pathWithRevision.slice(separator + 1),
+  };
+}
+
+function parseGitPackageSource(source: string): GitPackageSource {
+  const value = source.replace(/^git:/, "");
+  const scpMatch = value.match(/^git@([^:]+):(.+)$/);
+  if (scpMatch) {
+    const { path, revision } = splitGitRevision(scpMatch[2] ?? "");
+    return {
+      label: `${scpMatch[1] ?? ""}/${path}`.replace(/\.git$/, ""),
+      revision,
+    };
+  }
+
+  if (value.includes("://")) {
+    try {
+      const url = new URL(value);
+      const { path, revision } = splitGitRevision(
+        url.pathname.replace(/^\/+/, ""),
+      );
+      return {
+        label: `${url.hostname}/${path}`.replace(/\.git$/, ""),
+        revision,
+      };
+    } catch {
+      return { label: value, revision: undefined };
+    }
+  }
+
+  const slash = value.indexOf("/");
+  if (slash === -1) return { label: value, revision: undefined };
+  const { path, revision } = splitGitRevision(value.slice(slash + 1));
+  return {
+    label: `${value.slice(0, slash)}/${path}`.replace(/\.git$/, ""),
+    revision,
+  };
+}
+
+function formatPackageExtensionLabel(source: string): string {
+  if (!source.startsWith("git:")) {
+    return normalizePackageSource(source);
+  }
+
+  const { label, revision } = parseGitPackageSource(source);
+  return [label, ...(revision ? [`@${revision.slice(0, 6)}`] : [])].join(" ");
+}
+
+function isExplicitSourcePath(label: string): boolean {
+  const normalized = label.replace(/\\/g, "/");
+  return (
+    normalized.startsWith("/") ||
+    normalized.startsWith("~/") ||
+    normalized.startsWith("./") ||
+    normalized.startsWith("../") ||
+    /^[A-Za-z]:\//.test(normalized) ||
+    /\/(?:index)\.(?:[cm]?[jt]s)$/.test(normalized)
+  );
+}
+
+function parseExpandedExtensionGroups(
+  text: string | undefined,
+  localExtensionNames: Set<string>,
+): ExtensionGroups | undefined {
+  if (!text || getSectionHeading(text) !== "Extensions") return undefined;
+
+  const localExtensions: string[] = [];
+  const packageExtensions: string[] = [];
+  const sourceExtensions: string[] = [];
+  let foundItem = false;
+  let currentPackageSource: string | undefined;
+  let currentPackagePaths: string[] = [];
+  const flushPackage = () => {
+    if (!currentPackageSource) return;
+    packageExtensions.push(formatPackageExtensionLabel(currentPackageSource));
+    currentPackageSource = undefined;
+    currentPackagePaths = [];
+  };
+
+  for (const rawLine of text.split("\n").slice(1)) {
+    const line = stripAnsi(rawLine).replace(/\s+$/, "");
+    const packageSource = line.match(/^ {4}((?:npm|git):.+)$/)?.[1];
+    if (packageSource) {
+      flushPackage();
+      currentPackageSource = packageSource;
+      foundItem = true;
+      continue;
+    }
+
+    const packagePath = line.match(/^ {6}(\S.*)$/)?.[1];
+    if (packagePath && currentPackageSource) {
+      currentPackagePaths.push(packagePath);
+      continue;
+    }
+
+    flushPackage();
+    const path = line.match(/^ {4}(\S.*)$/)?.[1];
+    if (!path || /^(?:project|user|path)$/.test(path)) continue;
+
+    const name = normalizeExtensionName(path);
+    if (
+      localExtensionNames.has(name) ||
+      /(?:^|\/)\.pi\/(?:agent\/)?extensions(?:\/|$)/.test(
+        path.replace(/\\/g, "/"),
+      )
+    ) {
+      localExtensions.push(name);
+    } else {
+      sourceExtensions.push(path.replace(/\\/g, "/"));
+    }
+    foundItem = true;
+  }
+
+  flushPackage();
+
+  if (!foundItem) return undefined;
+  return {
+    localExtensions: sortExtensionNames(unique(localExtensions)),
+    packageExtensions: sortExtensionNames(unique(packageExtensions)),
+    sourceExtensions: sortExtensionNames(unique(sourceExtensions)),
+  };
+}
+
+function classifyCompactExtensionLabels(
+  labels: string[],
+  localExtensionNames: Set<string>,
+): ExtensionGroups {
+  const localExtensions: string[] = [];
+  const packageExtensions: string[] = [];
+  const sourceExtensions: string[] = [];
+
+  for (const label of labels) {
+    const name = normalizeExtensionName(label);
+    const indexParent = label
+      .replace(/\\/g, "/")
+      .match(/(?:^|\/)([^/]+)\/index\.(?:[cm]?[jt]s)$/)?.[1];
+    if (
+      localExtensionNames.has(name) ||
+      localExtensionNames.has(indexParent ?? "")
+    ) {
+      localExtensions.push(name);
+    } else if (isPackageSource(label) || name.startsWith("@")) {
+      packageExtensions.push(
+        isPackageSource(label) ? normalizePackageSource(label) : name,
+      );
+    } else if (isExplicitSourcePath(label)) {
+      sourceExtensions.push(name);
+    } else {
+      packageExtensions.push(name);
+    }
+  }
+
+  return {
+    localExtensions: sortExtensionNames(unique(localExtensions)),
+    packageExtensions: sortExtensionNames(unique(packageExtensions)),
+    sourceExtensions: sortExtensionNames(unique(sourceExtensions)),
+  };
+}
+
+let cachedLocalExtensionNames: Set<string> | undefined;
+
+function getLocalExtensionNames(): Set<string> {
+  if (cachedLocalExtensionNames) return cachedLocalExtensionNames;
+
+  const extensionsDir = join(getAgentDir(), "extensions");
   try {
-    return ctx.isIdle() && !ctx.hasPendingMessages() && isFreshStartupSession(ctx);
+    cachedLocalExtensionNames = new Set(
+      readdirSync(extensionsDir, { withFileTypes: true }).flatMap((entry) => {
+        if (/\.[cm]?[jt]s$/.test(entry.name))
+          return normalizeExtensionName(entry.name);
+        if (
+          entry.isDirectory() &&
+          existsSync(join(extensionsDir, entry.name, "index.ts"))
+        ) {
+          return entry.name;
+        }
+        return [];
+      }),
+    );
   } catch {
-    return false;
+    cachedLocalExtensionNames = new Set();
+  }
+  return cachedLocalExtensionNames;
+}
+
+export function parseWelcomeResources(
+  text: string,
+  localExtensionNames = getLocalExtensionNames(),
+  expandedExtensionsText?: string,
+): WelcomeResources {
+  const bodies = new Map<WelcomeSection, string[]>();
+  let currentSection: WelcomeSection | undefined;
+
+  for (const rawLine of text.split("\n")) {
+    const line = stripAnsi(rawLine).trim();
+    const header = line.match(/^\[([^\]]+)\]$/)?.[1];
+    if (header) {
+      currentSection = WELCOME_SECTIONS.find((section) => section === header);
+      if (currentSection && !bodies.has(currentSection)) {
+        bodies.set(currentSection, []);
+      }
+      continue;
+    }
+
+    if (line && currentSection) bodies.get(currentSection)?.push(line);
+  }
+
+  const context = unique(splitList(bodies.get("Context") ?? []));
+  const skills = unique(splitList(bodies.get("Skills") ?? []));
+  const prompts = unique(splitList(bodies.get("Prompts") ?? []));
+  const themes = unique(splitList(bodies.get("Themes") ?? []));
+  const extensionLabels = unique(splitList(bodies.get("Extensions") ?? []));
+  const groups =
+    parseExpandedExtensionGroups(expandedExtensionsText, localExtensionNames) ??
+    classifyCompactExtensionLabels(extensionLabels, localExtensionNames);
+  const extensions = [
+    ...groups.localExtensions,
+    ...groups.packageExtensions,
+    ...groups.sourceExtensions,
+  ];
+
+  return {
+    context,
+    skills,
+    prompts,
+    themes,
+    extensions,
+    packageExtensions: groups.packageExtensions,
+    sourceExtensions: groups.sourceExtensions,
+  };
+}
+
+function takeResourcePanel(tui: TUI): ResourceBridge | undefined {
+  const host = tui as BridgeTui;
+  if (host[RESOURCE_BRIDGE_KEY]) return undefined;
+
+  // 桥接核心 loaded-resources 面板：它紧跟在 header 之后（下标 1）。
+  // 整体形状检查失败时保持核心面板原样，而不是移动无关组件。
+  if (tui.children.length < 8 || !isResourcePanel(tui.children[0])) {
+    return undefined;
+  }
+  const panel = tui.children[RESOURCE_PANEL_INDEX];
+  if (!isResourcePanel(panel)) return undefined;
+
+  const bridge = { panel, originalIndex: RESOURCE_PANEL_INDEX };
+  tui.removeChild(panel);
+  host[RESOURCE_BRIDGE_KEY] = bridge;
+  return bridge;
+}
+
+function restoreResourcePanel(
+  tui: TUI,
+  bridge: ResourceBridge | undefined,
+): void {
+  if (!bridge) return;
+
+  if (!tui.children.includes(bridge.panel)) {
+    const index = Math.min(bridge.originalIndex, tui.children.length);
+    tui.children.splice(index, 0, bridge.panel);
+  }
+  delete (tui as BridgeTui)[RESOURCE_BRIDGE_KEY];
+}
+
+// ---------------------------------------------------------------------------
+// 布局渲染
+// ---------------------------------------------------------------------------
+
+function centerLineIn(line: string, width: number): string {
+  const clipped = truncateToWidth(line, width, "");
+  const padding = Math.max(0, Math.floor((width - visibleWidth(clipped)) / 2));
+  return `${" ".repeat(padding)}${clipped}`;
+}
+
+function padToWidth(text: string, width: number): string {
+  const clipped = truncateToWidth(text, width, "");
+  return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+}
+
+function wrapPrefixed(prefix: string, text: string, width: number): string[] {
+  const prefixWidth = visibleWidth(prefix);
+  if (width <= prefixWidth) return [truncateToWidth(prefix, width, "")];
+
+  const wrapped = wrapTextWithAnsi(text, width - prefixWidth);
+  const continuation = " ".repeat(prefixWidth);
+  return wrapped.map(
+    (line, index) => `${index === 0 ? prefix : continuation}${line}`,
+  );
+}
+
+function appendSingleColumnRows(
+  lines: string[],
+  items: string[],
+  theme: Theme,
+  columnWidth: number,
+): void {
+  for (const item of items) {
+    lines.push(
+      ...wrapPrefixed(
+        theme.fg("dim", "  • "),
+        theme.fg("dim", item),
+        columnWidth,
+      ),
+    );
   }
 }
 
-export class WelcomeWidget implements Component {
+function getColumnWidths(listWidth: number, columnCount: number): number[] {
+  const totalCellWidth = listWidth - LIST_COLUMN_GAP * (columnCount - 1);
+  const baseCellWidth = Math.floor(totalCellWidth / columnCount);
+  const widerCellCount = totalCellWidth % columnCount;
+  return Array.from(
+    { length: columnCount },
+    (_, index) => baseCellWidth + (index < widerCellCount ? 1 : 0),
+  );
+}
+
+function canUseThreeColumns(items: string[], columnWidth: number): boolean {
+  const listWidth = Math.max(1, columnWidth - 2);
+  const fittingColumns = Math.floor(
+    (listWidth + LIST_COLUMN_GAP) / (MIN_LIST_COLUMN_WIDTH + LIST_COLUMN_GAP),
+  );
+  if (fittingColumns < 3) return false;
+
+  const rowsPerColumn = Math.ceil(items.length / 3);
+  const cellWidths = getColumnWidths(listWidth, 3);
+  return items.every((item, index) => {
+    const column = Math.floor(index / rowsPerColumn);
+    return visibleWidth(`• ${item}`) <= (cellWidths[column] ?? 0);
+  });
+}
+
+function getSharedMultiColumnCount(
+  resources: WelcomeResources,
+  columnWidth: number,
+): 2 | 3 {
+  const packageExtensions = new Set(
+    resources.packageExtensions ??
+      resources.vendoredExtensions ??
+      resources.extensions.filter((name) => name.startsWith("@")),
+  );
+  const sourceExtensions = new Set(resources.sourceExtensions ?? []);
+  const localExtensions = resources.extensions.filter(
+    (name) => !packageExtensions.has(name) && !sourceExtensions.has(name),
+  );
+  const multiColumnLists = [resources.skills, localExtensions].filter(
+    (items) => items.length > MAX_LIST_ROWS_PER_COLUMN,
+  );
+  return multiColumnLists.every((items) =>
+    canUseThreeColumns(items, columnWidth),
+  )
+    ? 3
+    : 2;
+}
+
+function appendColumnRows(
+  lines: string[],
+  items: string[],
+  theme: Theme,
+  columnWidth: number,
+  sharedColumnCount?: 2 | 3,
+  minCellWidth = MIN_LIST_COLUMN_WIDTH,
+): void {
+  const listWidth = Math.max(1, columnWidth - 2);
+  const desiredColumns = Math.ceil(items.length / MAX_LIST_ROWS_PER_COLUMN);
+  const fittingColumns = Math.max(
+    1,
+    Math.floor((listWidth + LIST_COLUMN_GAP) / (minCellWidth + LIST_COLUMN_GAP)),
+  );
+  const requestedColumns =
+    sharedColumnCount && items.length > MAX_LIST_ROWS_PER_COLUMN
+      ? sharedColumnCount
+      : desiredColumns;
+  const columnCount = Math.min(requestedColumns, fittingColumns);
+
+  if (columnCount === 1) {
+    appendSingleColumnRows(lines, items, theme, columnWidth);
+    return;
+  }
+
+  const rowsPerColumn = Math.ceil(items.length / columnCount);
+  const cellWidths = getColumnWidths(listWidth, columnCount);
+
+  for (let row = 0; row < rowsPerColumn; row += 1) {
+    const cells = cellWidths.map((cellWidth, column) => {
+      const item = items[column * rowsPerColumn + row];
+      if (!item) return " ".repeat(cellWidth);
+
+      // truncateToWidth inserts ANSI resets around its ellipsis. Strip those
+      // because the complete row receives its muted color afterward; otherwise
+      // one truncated cell resets the color of every following column.
+      const cell = stripAnsi(truncateToWidth(`• ${item}`, cellWidth, "…"));
+      return cell + " ".repeat(Math.max(0, cellWidth - visibleWidth(cell)));
+    });
+    const rowText = `  ${cells.join(" ".repeat(LIST_COLUMN_GAP))}`.trimEnd();
+    lines.push(theme.fg("dim", rowText));
+  }
+}
+
+// 按内容宽度自适应多列的最小列宽：在保证不截断的前提下压缩列宽、增加列数。
+// 下限 MIN_LIST_COLUMN_WIDTH，上限 60（防止列宽过大反而浪费空间）。
+// 若按不截断宽度只能排 1 列、而列表较长（多列可显著减少行数），则收紧列宽
+// 换取 2 列——个别超长项由 appendColumnRows 以省略号截断。
+function getFitToContentMinCellWidth(
+  items: string[],
+  columnWidth: number,
+): number {
+  const maxItemVisibleWidth = items.reduce(
+    (max, item) => Math.max(max, visibleWidth(`• ${item}`)),
+    0,
+  );
+  const fitWidth = Math.min(
+    60,
+    Math.max(MIN_LIST_COLUMN_WIDTH, maxItemVisibleWidth + 4),
+  );
+  const listWidth = Math.max(1, columnWidth - 2);
+  const fittingColumns = Math.max(
+    1,
+    Math.floor((listWidth + LIST_COLUMN_GAP) / (fitWidth + LIST_COLUMN_GAP)),
+  );
+  if (fittingColumns === 1 && items.length > MAX_LIST_ROWS_PER_COLUMN) {
+    return Math.max(
+      MIN_LIST_COLUMN_WIDTH,
+      Math.floor((listWidth + LIST_COLUMN_GAP) / 2) - LIST_COLUMN_GAP,
+    );
+  }
+  return fitWidth;
+}
+
+function appendSection(
+  lines: string[],
+  title: WelcomeSection,
+  body: string[],
+  theme: Theme,
+  columnWidth: number,
+  singleColumn = false,
+  sharedColumnCount?: 2 | 3,
+): void {
+  if (lines.length > 0) lines.push("");
+  lines.push(theme.fg("mdHeading", `[${title}]`));
+
+  if (body.length === 0) {
+    lines.push(theme.fg("dim", "  (none)"));
+    return;
+  }
+
+  if (singleColumn) appendSingleColumnRows(lines, body, theme, columnWidth);
+  else appendColumnRows(lines, body, theme, columnWidth, sharedColumnCount);
+}
+
+function appendExtensionsSection(
+  lines: string[],
+  extensions: string[],
+  packageExtensionNames: string[] | undefined,
+  sourceExtensionNames: string[] | undefined,
+  theme: Theme,
+  columnWidth: number,
+  sharedColumnCount: 2 | 3,
+): void {
+  if (lines.length > 0) lines.push("");
+  lines.push(theme.fg("mdHeading", "[Extensions]"));
+
+  if (extensions.length === 0) {
+    lines.push(theme.fg("dim", "  (none)"));
+    return;
+  }
+
+  const packageExtensions = new Set(
+    // Keep direct callers that provide only `extensions` backward compatible.
+    packageExtensionNames ?? extensions.filter((name) => name.startsWith("@")),
+  );
+  const sourceExtensions = new Set(sourceExtensionNames ?? []);
+  const localExtensions = extensions.filter(
+    (name) => !packageExtensions.has(name) && !sourceExtensions.has(name),
+  );
+  const installedPackageExtensions = extensions.filter((name) =>
+    packageExtensions.has(name),
+  );
+  const linkedSourceExtensions = extensions.filter((name) =>
+    sourceExtensions.has(name),
+  );
+  type ExtensionGroup = {
+    title: string;
+    items: string[];
+    multiColumn: boolean;
+    fitToContent?: boolean;
+  };
+  const groups: ExtensionGroup[] = [
+    { title: "Local", items: localExtensions, multiColumn: true },
+    {
+      title: "Packages",
+      items: installedPackageExtensions,
+      multiColumn: true,
+      fitToContent: true,
+    },
+    {
+      title: "Source paths",
+      items: linkedSourceExtensions,
+      multiColumn: false,
+    },
+  ].filter(({ items }) => items.length > 0);
+
+  for (const [index, group] of groups.entries()) {
+    if (index > 0) lines.push("");
+    lines.push(theme.fg("muted", `  ${group.title}`));
+    if (group.multiColumn) {
+      appendColumnRows(
+        lines,
+        group.items,
+        theme,
+        columnWidth,
+        group.fitToContent ? undefined : sharedColumnCount,
+        group.fitToContent
+          ? getFitToContentMinCellWidth(group.items, columnWidth)
+          : undefined,
+      );
+    } else {
+      appendSingleColumnRows(lines, group.items, theme, columnWidth);
+    }
+  }
+}
+
+function appendResourceSection(
+  lines: string[],
+  title: WelcomeSection,
+  resources: WelcomeResources,
+  theme: Theme,
+  columnWidth: number,
+  sharedColumnCount: 2 | 3,
+): void {
+  if (title === "Extensions") {
+    appendExtensionsSection(
+      lines,
+      resources.extensions,
+      resources.packageExtensions ?? resources.vendoredExtensions,
+      resources.sourceExtensions,
+      theme,
+      columnWidth,
+      sharedColumnCount,
+    );
+    return;
+  }
+
+  const body =
+    title === "Context"
+      ? resources.context
+      : title === "Skills"
+        ? resources.skills
+        : title === "Prompts"
+          ? resources.prompts
+          : resources.themes;
+  appendSection(
+    lines,
+    title,
+    body,
+    theme,
+    columnWidth,
+    // Context / Prompts / Themes 固定单列，Skills 按宽度自动多列
+    title === "Context" || title === "Prompts" || title === "Themes",
+    title === "Skills" ? sharedColumnCount : undefined,
+  );
+}
+
+function renderBrandColumn(theme: Theme, columnWidth: number): string[] {
+  const lines = WIDE_LOGO.map((line) =>
+    centerLineIn(theme.bold(theme.fg("accent", line)), columnWidth),
+  );
+  lines.push("");
+  lines.push(centerLineIn(theme.fg("dim", `v${VERSION}`), columnWidth));
+  return lines;
+}
+
+// Context / Prompts / Themes 等小区段并排为一行组：每个区段占一列（标题 + 各项）。
+// 若某区段任一项超出并排列宽，则该区段降级为独占渲染（appendSection，可换行），
+// 其余区段仍保持并排；整体顺序与传入顺序一致。
+function appendInlineSections(
+  lines: string[],
+  sections: { title: WelcomeSection; body: string[] }[],
+  theme: Theme,
+  columnWidth: number,
+): void {
+  const gap = LIST_COLUMN_GAP;
+  const cellWidth = Math.max(
+    1,
+    Math.floor((columnWidth - gap * (sections.length - 1)) / sections.length),
+  );
+
+  const flush = (): void => {
+    const batch = pending;
+    if (batch.length === 0) return;
+    pending = [];
+    if (batch.length === 1) {
+      const { title, body } = batch[0];
+      appendSection(lines, title, body, theme, columnWidth, true);
+      return;
+    }
+    if (lines.length > 0) lines.push("");
+
+    const columns = batch.map(({ title, body }) => {
+      const column: string[] = [theme.fg("mdHeading", `[${title}]`)];
+      if (body.length === 0) {
+        column.push(theme.fg("dim", "  (none)"));
+      } else {
+        for (const item of body) {
+          // 列内宽度有限，超长直接截断（不换行）
+          column.push(
+            theme.fg(
+              "dim",
+              `  • ${truncateToWidth(item, Math.max(0, cellWidth - 4), "")}`,
+            ),
+          );
+        }
+      }
+      return column;
+    });
+
+    const height = Math.max(...columns.map((column) => column.length));
+    for (let row = 0; row < height; row += 1) {
+      const cells = columns.map((column) =>
+        padToWidth(column[row] ?? "", cellWidth),
+      );
+      lines.push(cells.join(" ".repeat(gap)).trimEnd());
+    }
+  };
+
+  let pending: { title: WelcomeSection; body: string[] }[] = [];
+  for (const section of sections) {
+    const fitsInline = section.body.every(
+      (item) => visibleWidth(`  • ${item}`) <= cellWidth,
+    );
+    if (fitsInline) {
+      pending.push(section);
+    } else {
+      flush();
+      appendSection(lines, section.title, section.body, theme, columnWidth, true);
+    }
+  }
+  flush();
+}
+
+function renderResourceColumn(
+  resources: WelcomeResources,
+  theme: Theme,
+  columnWidth: number,
+): string[] {
+  const lines: string[] = [];
+  const sharedColumnCount = getSharedMultiColumnCount(resources, columnWidth);
+
+  // Context / Prompts / Themes 三个小区段并排为一行组，放在原来 Context 的位置
+  appendInlineSections(
+    lines,
+    [
+      { title: "Context", body: resources.context },
+      { title: "Prompts", body: resources.prompts },
+      { title: "Themes", body: resources.themes },
+    ],
+    theme,
+    columnWidth,
+  );
+  // Skills / Extensions 保持各自独占一行组
+  appendResourceSection(
+    lines,
+    "Skills",
+    resources,
+    theme,
+    columnWidth,
+    sharedColumnCount,
+  );
+  appendResourceSection(
+    lines,
+    "Extensions",
+    resources,
+    theme,
+    columnWidth,
+    sharedColumnCount,
+  );
+  return lines;
+}
+
+// 右侧内容列：快捷键提示行 + onboarding 行 + 空行 + 各区段
+function renderContentColumn(
+  resources: WelcomeResources,
+  theme: Theme,
+  columnWidth: number,
+): string[] {
+  return [
+    ...wrapTextWithAnsi(
+      theme.fg("muted", KEYBINDING_HINTS_LINE),
+      Math.max(1, columnWidth),
+    ),
+    ...wrapTextWithAnsi(
+      theme.fg("dim", ONBOARDING_LINE),
+      Math.max(1, columnWidth),
+    ),
+    "",
+    ...renderResourceColumn(resources, theme, columnWidth),
+  ];
+}
+
+// 宽屏双列：左侧品牌列（logo + 版本，垂直居中，宽约总宽 1/3），右侧原有欢迎内容
+function renderWideWelcome(
+  resources: WelcomeResources,
+  theme: Theme,
+  width: number,
+  brandWidth: number,
+): string[] {
+  const contentWidth = width - brandWidth - GRID_COLUMN_GAP;
+  const brandLines = renderBrandColumn(theme, brandWidth);
+  const contentLines = renderContentColumn(resources, theme, contentWidth);
+  const rowCount = Math.max(brandLines.length, contentLines.length);
+  // 品牌列垂直居中：前面补空行，其余由 padToWidth 补到等宽
+  const brandTopPad = Math.floor((rowCount - brandLines.length) / 2);
+  const rows: string[] = [];
+  for (let row = 0; row < rowCount; row += 1) {
+    const brand = padToWidth(
+      brandLines[row - brandTopPad] ?? "",
+      brandWidth,
+    );
+    const content = contentLines[row] ?? "";
+    rows.push(`${brand}${" ".repeat(GRID_COLUMN_GAP)}${content}`.trimEnd());
+  }
+  return rows;
+}
+
+// 窄屏单列堆叠：品牌列居中，空行 + 各区段，整体居中（首尾各一个空行）
+function renderNarrowWelcome(
+  resources: WelcomeResources | undefined,
+  theme: Theme,
+  width: number,
+): string[] {
+  const columnWidth = Math.min(MAX_STACKED_COLUMN_WIDTH, width);
+  const lines = ["", ...renderBrandColumn(theme, columnWidth)];
+  if (resources) {
+    lines.push("", ...renderResourceColumn(resources, theme, columnWidth));
+  }
+  lines.push("");
+
+  const leftPadding = Math.max(0, Math.floor((width - columnWidth) / 2));
+  return lines.map((line) =>
+    line
+      ? `${" ".repeat(leftPadding)}${truncateToWidth(line, columnWidth, "")}`
+      : "",
+  );
+}
+
+function renderWelcomeHeader(
+  resources: WelcomeResources | undefined,
+  theme: Theme,
+  width: number,
+): string[] {
+  if (width <= 0) return [];
+  const brandWidth = Math.max(BRAND_COLUMN_WIDTH, Math.floor(width / 3));
+  if (
+    resources &&
+    width >= brandWidth + GRID_COLUMN_GAP + MIN_RESOURCE_COLUMN_WIDTH
+  ) {
+    return renderWideWelcome(resources, theme, width, brandWidth);
+  }
+  return renderNarrowWelcome(resources, theme, width);
+}
+
+// ---------------------------------------------------------------------------
+// 自定义 header
+// ---------------------------------------------------------------------------
+
+class WelcomeHeader implements Component {
+  private resourceReadyTimer: ReturnType<typeof setTimeout> | undefined;
+  private resources: WelcomeResources | undefined;
+  private cachedWidth: number | undefined;
+  private cachedLines: string[] | undefined;
+  private disposed = false;
+
   constructor(
     private readonly tui: TUI,
-    private readonly theme: WelcomeTheme,
-  ) {}
+    private readonly theme: Theme,
+    private readonly bridge: ResourceBridge | undefined,
+    forceInitialRender: boolean,
+  ) {
+    // session_start 在核心填充 loaded-resources 面板之前触发，稍后再捕获。
+    this.resourceReadyTimer = setTimeout(
+      () => this.captureResourcesWhenReady(forceInitialRender, 0),
+      0,
+    );
+  }
+
+  private captureResourcesWhenReady(
+    forceInitialRender: boolean,
+    attempt: number,
+  ): void {
+    if (this.disposed) return;
+    if (!this.bridge) {
+      this.resourceReadyTimer = undefined;
+      if (attempt === 0) this.tui.requestRender(forceInitialRender);
+      return;
+    }
+
+    let snapshot: ResourcePanelSnapshot;
+    try {
+      snapshot = inspectResourcePanel(this.bridge.panel);
+    } catch {
+      this.showNativePanel(forceInitialRender);
+      return;
+    }
+    if (snapshot.requiresNativePanel) {
+      this.showNativePanel(forceInitialRender);
+      return;
+    }
+
+    const { resourceText, expandedExtensionsText } = snapshot;
+    const candidateResources = resourceText
+      ? parseWelcomeResources(
+          resourceText,
+          getLocalExtensionNames(),
+          expandedExtensionsText,
+        )
+      : undefined;
+    // 完整性检查：扩展列表必须包含 pi-ui 自身，防止抓到半填充的快照。
+    const resourcePanelIsComplete = Boolean(
+      candidateResources?.extensions.some(isSelfExtension),
+    );
+    if (resourcePanelIsComplete) {
+      this.resources = candidateResources;
+      this.clearRenderCache();
+      this.resourceReadyTimer = undefined;
+      this.tui.requestRender(forceInitialRender);
+      return;
+    }
+
+    if (attempt === 0) {
+      // 先渲染品牌列，等完整快照到达后再原子切换为完整布局。
+      this.tui.requestRender(forceInitialRender);
+    }
+    if (attempt < MAX_RESOURCE_RETRIES) {
+      this.resourceReadyTimer = setTimeout(
+        () => this.captureResourcesWhenReady(false, attempt + 1),
+        RESOURCE_POLL_INTERVAL_MS,
+      );
+    } else {
+      this.showNativePanel(false);
+    }
+  }
+
+  private showNativePanel(forceRender: boolean): void {
+    this.resourceReadyTimer = undefined;
+    restoreResourcePanel(this.tui, this.bridge);
+    this.clearRenderCache();
+    this.tui.requestRender(forceRender);
+  }
+
+  private clearRenderCache(): void {
+    this.cachedWidth = undefined;
+    this.cachedLines = undefined;
+  }
 
   render(width: number): string[] {
-    if (!isWelcomeVisible(width, this.tui.terminal.rows)) return [];
-    return renderWelcomeLines(width, this.theme);
+    if (this.cachedLines && this.cachedWidth === width) {
+      return this.cachedLines;
+    }
+
+    const resources = this.resources;
+    const lines = renderWelcomeHeader(resources, this.theme, width);
+    if (resources) {
+      this.cachedWidth = width;
+      this.cachedLines = lines;
+    }
+    return lines;
   }
 
   invalidate(): void {
-    // Render reads the current terminal dimensions on every pass.
+    this.clearRenderCache();
+    this.bridge?.panel.invalidate();
   }
 
   dispose(): void {
-    // The controller owns widget removal; never call setWidget from here.
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.resourceReadyTimer) clearTimeout(this.resourceReadyTimer);
+    restoreResourcePanel(this.tui, this.bridge);
   }
 }
 
-export interface WelcomeWidgetController {
-  mount(): void;
-  dismiss(): void;
-  dispose(): void;
-}
-
-function isTerminalSizeReport(data: unknown): boolean {
-  if (typeof data !== "string") return false;
-
-  const prefix = `${String.fromCharCode(27)}[6;`;
-  if (!data.startsWith(prefix) || !data.endsWith("t")) return false;
-  return /^\d+;\d+$/.test(data.slice(prefix.length, -1));
-}
-
-export function createWelcomeWidget(ctx: ExtensionContext): WelcomeWidgetController {
-  let mounted = false;
-  let dismissed = false;
-  let disposed = false;
-  let widgetRegistered = false;
-  let removeTerminalInput: (() => void) | undefined;
-
-  const removeInputListener = () => {
-    const unsubscribe = removeTerminalInput;
-    removeTerminalInput = undefined;
-    if (!unsubscribe) return;
-
-    try {
-      unsubscribe();
-    } catch {
-      // A replaced session may already have cleared extension input listeners.
-    }
-  };
-
-  const clearWelcomeWidget = () => {
-    if (!widgetRegistered) return;
-
-    try {
-      ctx.ui.setWidget(WELCOME_WIDGET_KEY, undefined);
-      widgetRegistered = false;
-    } catch {
-      // A stale context must not affect the editor or footer.
-    }
-  };
-
-  const dismiss = () => {
-    if (dismissed && !widgetRegistered && !removeTerminalInput) return;
-
-    dismissed = true;
-    removeInputListener();
-    clearWelcomeWidget();
-  };
-
-  return {
-    mount() {
-      if (mounted || dismissed || disposed) return;
-      mounted = true;
-
-      try {
-        removeTerminalInput = ctx.ui.onTerminalInput((data) => {
-          if (!isTerminalSizeReport(data)) dismiss();
-          return undefined;
-        });
-      } catch {
-        // agent_start still dismisses the widget if raw input hooks are unavailable.
-      }
-
-      try {
-        widgetRegistered = true;
-        ctx.ui.setWidget(
-          WELCOME_WIDGET_KEY,
-          (tui, theme) => new WelcomeWidget(tui, theme),
-          { placement: "aboveEditor" },
-        );
-      } catch {
-        dismiss();
-      }
-    },
-
-    dismiss,
-
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      dismiss();
-    },
-  };
+/**
+ * 安装自定义欢迎屏：替换核心 header 为"左侧 logo 列 + 右侧原有欢迎内容"的
+ * 左右双列布局。session_start 时调用即可，核心在 setHeader 时会先释放旧的
+ * 自定义 header（dispose 会恢复原生资源面板），重复调用是安全的。
+ */
+export function installWelcomeHeader(
+  ctx: ExtensionContext,
+  reason: SessionStartEvent["reason"],
+): void {
+  try {
+    ctx.ui.setHeader(
+      (tui, theme) =>
+        new WelcomeHeader(
+          tui,
+          theme,
+          takeResourcePanel(tui),
+          reason === "startup",
+        ),
+    );
+  } catch {
+    // ctx 在 session 替换/重载后可能已失效，静默忽略。
+  }
 }
