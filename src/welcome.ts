@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { Component, OverlayHandle } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 
 type WelcomeTheme = ExtensionContext["ui"]["theme"];
 type WelcomeTone = "accent" | "muted" | "dim";
@@ -15,7 +15,9 @@ export interface WelcomeLine {
 
 export const WIDE_WELCOME_BREAKPOINT = 60;
 export const NARROW_WELCOME_BREAKPOINT = 32;
+// This is only a height gate; widgets do not render a matching spacer.
 export const WELCOME_BOTTOM_RESERVE = 5;
+export const WELCOME_WIDGET_KEY = "@rokiy/pi-ui:welcome";
 
 const MINIMUM_WELCOME_WIDTH = 8;
 const WIDE_LOGO = [
@@ -131,37 +133,46 @@ export function shouldShowWelcome(
   }
 }
 
-export class WelcomeOverlay implements Component {
-  constructor(private readonly theme: WelcomeTheme) {}
+export class WelcomeWidget implements Component {
+  constructor(
+    private readonly tui: TUI,
+    private readonly theme: WelcomeTheme,
+  ) {}
 
   render(width: number): string[] {
+    if (!isWelcomeVisible(width, this.tui.terminal.rows)) return [];
     return renderWelcomeLines(width, this.theme);
   }
 
   invalidate(): void {
-    // This static overlay has no internal state to invalidate.
+    // Render reads the current terminal dimensions on every pass.
+  }
+
+  dispose(): void {
+    // The controller owns widget removal; never call setWidget from here.
   }
 }
 
-export interface WelcomeOverlayController {
+export interface WelcomeWidgetController {
   mount(): void;
   dismiss(): void;
   dispose(): void;
 }
 
-function isTerminalSizeReport(data: string): boolean {
+function isTerminalSizeReport(data: unknown): boolean {
+  if (typeof data !== "string") return false;
+
   const prefix = `${String.fromCharCode(27)}[6;`;
   if (!data.startsWith(prefix) || !data.endsWith("t")) return false;
   return /^\d+;\d+$/.test(data.slice(prefix.length, -1));
 }
 
-export function createWelcomeOverlay(ctx: ExtensionContext): WelcomeOverlayController {
+export function createWelcomeWidget(ctx: ExtensionContext): WelcomeWidgetController {
   let mounted = false;
   let dismissed = false;
   let disposed = false;
-  let handle: OverlayHandle | undefined;
+  let widgetRegistered = false;
   let removeTerminalInput: (() => void) | undefined;
-  const hiddenHandles = new Set<OverlayHandle>();
 
   const removeInputListener = () => {
     const unsubscribe = removeTerminalInput;
@@ -175,26 +186,23 @@ export function createWelcomeOverlay(ctx: ExtensionContext): WelcomeOverlayContr
     }
   };
 
-  const hideWelcomeOverlay = (overlayHandle: OverlayHandle | undefined) => {
-    if (!overlayHandle || hiddenHandles.has(overlayHandle)) return;
-    hiddenHandles.add(overlayHandle);
+  const clearWelcomeWidget = () => {
+    if (!widgetRegistered) return;
 
     try {
-      overlayHandle.hide();
+      ctx.ui.setWidget(WELCOME_WIDGET_KEY, undefined);
+      widgetRegistered = false;
     } catch {
       // A stale context must not affect the editor or footer.
     }
   };
 
   const dismiss = () => {
-    if (dismissed) return;
+    if (dismissed && !widgetRegistered && !removeTerminalInput) return;
 
     dismissed = true;
     removeInputListener();
-
-    const overlayHandle = handle;
-    handle = undefined;
-    hideWelcomeOverlay(overlayHandle);
+    clearWelcomeWidget();
   };
 
   return {
@@ -208,49 +216,18 @@ export function createWelcomeOverlay(ctx: ExtensionContext): WelcomeOverlayContr
           return undefined;
         });
       } catch {
-        // agent_start still dismisses the overlay if raw input hooks are unavailable.
+        // agent_start still dismisses the widget if raw input hooks are unavailable.
       }
 
       try {
-        const overlay = ctx.ui.custom<void>(
-          (_tui, theme) => new WelcomeOverlay(theme),
-          {
-            overlay: true,
-            overlayOptions: {
-              width: "100%",
-              anchor: "center",
-              margin: { bottom: WELCOME_BOTTOM_RESERVE },
-              nonCapturing: true,
-              visible: isWelcomeVisible,
-            },
-            onHandle(nextHandle) {
-              if (dismissed || disposed) {
-                hideWelcomeOverlay(nextHandle);
-                return;
-              }
-
-              const previousHandle = handle;
-              handle = nextHandle;
-              if (previousHandle && previousHandle !== nextHandle) {
-                hideWelcomeOverlay(previousHandle);
-              }
-            },
-          },
+        widgetRegistered = true;
+        ctx.ui.setWidget(
+          WELCOME_WIDGET_KEY,
+          (tui, theme) => new WelcomeWidget(tui, theme),
+          { placement: "aboveEditor" },
         );
-
-        void overlay.catch(() => {
-          try {
-            dismiss();
-          } catch {
-            // Cleanup must not leak through a stale session context.
-          }
-        });
       } catch {
-        try {
-          dismiss();
-        } catch {
-          // Cleanup must not leak through a stale session context.
-        }
+        dismiss();
       }
     },
 
@@ -259,11 +236,7 @@ export function createWelcomeOverlay(ctx: ExtensionContext): WelcomeOverlayContr
     dispose() {
       if (disposed) return;
       disposed = true;
-      try {
-        dismiss();
-      } catch {
-        // Cleanup must not leak through a stale session context.
-      }
+      dismiss();
     },
   };
 }

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendi
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { BoxedEditor } from "./editor.ts";
 import { collectUsage, buildCoreFooterSections, renderCoreFooterLine, renderExtensionStatusLine, formatTokens } from "./footer.ts";
-import { createWelcomeOverlay, shouldShowWelcome, type WelcomeOverlayController } from "./welcome.ts";
+import { createWelcomeWidget, shouldShowWelcome, type WelcomeWidgetController } from "./welcome.ts";
 
 export const WORKING_INDICATOR_FRAMES = ["󰄰", "󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"] as const;
 
@@ -18,16 +18,16 @@ const STATUS_ICONS = {
 } as const;
 
 let agentStartTime = 0;
-let activeWelcomeOverlay: WelcomeOverlayController | undefined;
+let activeWelcomeWidget: WelcomeWidgetController | undefined;
 
-export function clearWelcomeOverlay(): void {
-  const overlay = activeWelcomeOverlay;
-  activeWelcomeOverlay = undefined;
+export function clearWelcomeWidget(): void {
+  const widget = activeWelcomeWidget;
+  activeWelcomeWidget = undefined;
 
   try {
-    overlay?.dispose();
+    widget?.dispose();
   } catch {
-    // A replaced session may already have disposed the overlay.
+    // A replaced session may already have disposed the widget.
   }
 }
 
@@ -88,7 +88,7 @@ export function setupCustomUI(
   workingIndicatorTimer = undefined;
   lastTokenTime = 0;
   currentWorkingTone = undefined;
-  clearWelcomeOverlay();
+  clearWelcomeWidget();
 
   let rerenderFooter: (() => void) | undefined;
 
@@ -158,13 +158,13 @@ export function setupCustomUI(
     invalidate() { },
   }));
 
-  const welcomeOverlay = shouldShowWelcome(ctx, sessionStartReason)
-    ? createWelcomeOverlay(ctx)
+  const welcomeWidget = shouldShowWelcome(ctx, sessionStartReason)
+    ? createWelcomeWidget(ctx)
     : undefined;
 
-  if (welcomeOverlay) {
-    activeWelcomeOverlay = welcomeOverlay;
-    welcomeOverlay.mount();
+  if (welcomeWidget) {
+    activeWelcomeWidget = welcomeWidget;
+    welcomeWidget.mount();
   }
 
   // Defer initial indicator so SDK's resetExtensionUI() (which calls
@@ -173,10 +173,10 @@ export function setupCustomUI(
 
   // agent_start = 用户发消息、agent 开始处理 → 启动计时
   pi.on('agent_start', async () => {
-    if (activeWelcomeOverlay === welcomeOverlay) {
-      activeWelcomeOverlay = undefined;
+    if (activeWelcomeWidget === welcomeWidget) {
+      activeWelcomeWidget = undefined;
+      welcomeWidget?.dispose();
     }
-    welcomeOverlay?.dispose();
     agentStartTime = Date.now();
     startWorkingTimer();
     rerenderFooter?.();
