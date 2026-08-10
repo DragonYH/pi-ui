@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent";
-import { Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { BoxedEditor } from "./editor.ts";
-import { collectUsage, buildCoreFooterSections, renderCoreFooterLine, renderExtensionStatusLine, formatTokens } from "./footer.ts";
+import { collectUsage, buildCoreFooterSections, renderCoreFooterLine, renderExtensionStatusLine } from "./footer.ts";
 import { installWelcomeHeader } from "./welcome.ts";
 
 export const WORKING_INDICATOR_FRAMES = ["󰄰", "󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"] as const;
@@ -12,9 +12,6 @@ let currentWorkingTone: 'green' | 'yellow' | 'red' | undefined;
 
 const STATUS_ICONS = {
   clock: "󰅐",
-  input: "↑",
-  output: "↓",
-  cost: "󰈁",
 } as const;
 
 let agentStartTime = 0;
@@ -29,17 +26,6 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
   return `${minutes}m ${seconds}s`;
-}
-
-function buildUsageLine(input: number, output: number, costTotal: number | undefined, durationMs: number): string {
-  const inputStr = formatTokens(input);
-  const outputStr = formatTokens(output);
-  const costStr = costTotal != null ? `$${Number(costTotal).toFixed(4)}` : '-';
-  const durationStr = formatDuration(durationMs);
-  const statsLine = `${STATUS_ICONS.input}${inputStr}  ${STATUS_ICONS.output}${outputStr}  ·  ${costStr}  ·  ${STATUS_ICONS.clock} ${durationStr}`;
-  const separator = "\u2500".repeat(visibleWidth(statsLine));
-
-  return `\n${separator}\n${statsLine}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,48 +157,6 @@ export function setupCustomUI(
     // Clear working message back to default after a short delay
     setTimeout(() => { try { ctx.ui.setWorkingMessage(); } catch { /* ignore */ } }, 2000);
     rerenderFooter?.();
-  });
-
-  // message_end = 单条消息完成 → 追加消耗统计到 assistant 消息末尾
-  pi.on('message_end', async (event) => {
-    const msg = event?.message;
-    if (!msg || msg.role !== 'assistant') return;
-    const usage = msg?.usage;
-    if (!usage || (usage.input === 0 && usage.output === 0)) return;
-
-    const elapsed = agentStartTime ? Date.now() - agentStartTime : 0;
-    const usageLine = buildUsageLine(usage.input, usage.output, usage.cost?.total, elapsed);
-
-    // Append as a new text content block so the AssistantMessageComponent renders it
-    if (Array.isArray(msg.content)) {
-      msg.content.push({ type: 'text', text: usageLine });
-      // Return the mutated message so the core replaces it in-place (triggers re-render)
-      return { message: msg };
-    }
-
-    return {};
-  });
-
-  // context = LLM 调用前过滤上下文 → 剥离 usage stats，避免污染 LLM 上下文
-  pi.on('context', async (event) => {
-    const messages = event?.messages;
-    if (!Array.isArray(messages)) return {};
-
-    // Stats block format: \n───\n↑...
-    const STATS_RE = /^\n\u2500+\n↑/;
-
-    const filtered = messages.map((msg) => {
-      if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return msg;
-      return {
-        ...msg,
-        content: msg.content.filter((block) => {
-          if (block.type !== 'text') return true;
-          return !STATS_RE.test(block.text || '');
-        }),
-      };
-    });
-
-    return { messages: filtered };
   });
 
   pi.on('thinking_level_select', async () => {
