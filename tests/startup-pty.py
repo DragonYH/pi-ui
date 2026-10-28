@@ -35,6 +35,21 @@ with tempfile.TemporaryDirectory(prefix='native-startup-', dir=SCRATCH) as tempo
     root = Path(temporary)
     observer = root / 'observer.ts'
     observer.write_text('''import { appendFileSync } from "node:fs";
+import { InteractiveMode } from "@earendil-works/pi-coding-agent";
+const key = Symbol.for("pi-ui:test:resource-snapshots");
+const prototype = InteractiveMode.prototype;
+if (!prototype[key]) {
+  prototype[key] = true;
+  const original = prototype.showLoadedResources;
+  prototype.showLoadedResources = function(...args) {
+    const result = original.apply(this, args);
+    setTimeout(() => appendFileSync(process.env.PI_UI_TEST_RESOURCES, JSON.stringify({
+      nativeAttached: this.documentContainer.children.includes(this.loadedResourcesContainer),
+      header: this.customHeader?.render(150).join("\\n").replace(/\\x1b\\[[0-?]*[ -/]*[@-~]/g, ""),
+    }) + "\\n"), 200);
+    return result;
+  };
+}
 export default function(pi) {
   let unsubscribe;
   pi.on("session_start", () => {
@@ -65,20 +80,27 @@ export default function(pi) {
         if failing:
             extensions += [str(broken)]
         (agent / 'settings.json').write_text(json.dumps({'lastChangelogVersion': '1.4.0', 'checkForUpdates': False, 'extensions': extensions}))
+        for name in ['alpha', 'beta']:
+            skill = agent / 'skills' / name
+            skill.mkdir(parents=True)
+            (skill / 'SKILL.md').write_text(f'---\nname: {name}\ndescription: fixture {name}\n---\nFixture.\n')
         events = root / f'{label}.jsonl'
+        resources_file = root / f'{label}-resources.jsonl'
+        commands = [] if failing else ['/new', '/new'] + (['/reload', '/new'] if reload_run else [])
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 45, 150, 0, 0))
         env = os.environ.copy()
-        env.update({'PI_CODING_AGENT_DIR': str(agent), 'PI_OFFLINE': '1', 'TERM': 'xterm-256color', 'PI_UI_TEST_EVENTS': str(events), 'ANTHROPIC_API_KEY': 'startup-fixture-unused', 'JITI_FS_CACHE': '0'})
+        env.update({'PI_CODING_AGENT_DIR': str(agent), 'PI_OFFLINE': '1', 'TERM': 'xterm-256color', 'PI_UI_TEST_EVENTS': str(events), 'PI_UI_TEST_RESOURCES': str(resources_file), 'ANTHROPIC_API_KEY': 'startup-fixture-unused', 'JITI_FS_CACHE': '0'})
         # Ordinary settings load pi-ui LAST; no launcher and no explicit -e override.
-        command = ['pi', '--offline', '--no-session', '--no-mcp', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--no-approve', '--tui-mode', mode]
+        command = ['pi', '--offline', '--no-session', '--no-mcp', '--no-prompt-templates', '--no-themes', '--no-context-files', '--no-approve', '--tui-mode', mode]
         start = time.monotonic()
         process = subprocess.Popen(command, cwd=root, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
         capture = bytearray()
-        reload_sent = False
+        commands_sent = 0
         finished = None
         snapshots = []
+        resource_snapshots = []
         try:
             while time.monotonic() - start < 15 and process.poll() is None:
                 ready, _, _ = select.select([master], [], [], .04)
@@ -92,16 +114,25 @@ export default function(pi) {
                     capture.extend(data)
                 if events.exists():
                     snapshots = [json.loads(line) for line in events.read_text().splitlines()]
+                if resources_file.exists():
+                    resource_snapshots = [json.loads(line) for line in resources_file.read_text().splitlines()]
                 final = snapshots[-1] if snapshots else None
-                if final and not final['active']:
+                if final and not final['active'] and len(resource_snapshots) >= commands_sent + 1:
                     if finished is None:
                         finished = time.monotonic()
-                    if reload_run and not reload_sent and time.monotonic() - finished > .3:
-                        os.write(master, b'/reload\r')
-                        reload_sent = True
-                        finished = None
-                    elif time.monotonic() - finished > .3:
-                        if not reload_run or len({item['startedAt'] for item in snapshots}) >= 2:
+                    if time.monotonic() - finished > .3:
+                        if not failing:
+                            resources = resource_snapshots[-1]
+                            assert not resources['nativeAttached'], f'{label}: native comma list returned after {commands[:commands_sent]}'
+                            assert '[Skills] 2' in resources['header'], resources
+                            assert all(f'• {name}' in resources['header'] for name in ['alpha', 'beta']), resources
+                            assert re.search(r'\[Extensions\] \d+', resources['header']), resources
+                            assert all(name in resources['header'] for name in ['observer', 'slow-plugin']), resources
+                        if commands_sent < len(commands):
+                            os.write(master, (commands[commands_sent] + '\r').encode())
+                            commands_sent += 1
+                            finished = None
+                        else:
                             break
                 elif final and final['active']:
                     finished = None
@@ -109,6 +140,8 @@ export default function(pi) {
                 snapshots = [json.loads(line) for line in events.read_text().splitlines()]
             (SCRATCH / f'native-startup-{label}.ansi').write_bytes(capture)
             (SCRATCH / f'native-startup-{label}.json').write_text(json.dumps(snapshots, ensure_ascii=False, indent=2))
+            (SCRATCH / f'native-startup-{label}-resources.json').write_text(json.dumps(resource_snapshots, ensure_ascii=False, indent=2))
+            assert commands_sent == len(commands) and len(resource_snapshots) == len(commands) + 1, f'{label}: session transitions did not finish'
             assert snapshots and not snapshots[-1]['active'], f'{label}: startup did not complete; see .pi/native-startup-{label}.ansi'
             final = snapshots[-1]
             row = next(entry for entry in final['entries'] if entry['name'] == 'slow-plugin')
@@ -127,7 +160,7 @@ export default function(pi) {
                 assert 'intentional initialization fixture failure' in plain
             if reload_run:
                 assert len({item['startedAt'] for item in snapshots}) >= 2, 'reload did not start a new timing run'
-            result = {'mode': label, 'entry': 'pi', 'pi_ui_source_order': 'last', 'pi_ui_initialization_order': 'first', 'reload': reload_run, 'entries': len(final['entries']), 'slow_initialize_ms': round(row['initializeMs'])}
+            result = {'mode': label, 'entry': 'pi', 'pi_ui_source_order': 'last', 'pi_ui_initialization_order': 'first', 'reload': reload_run, 'commands': commands, 'resource_snapshots': len(resource_snapshots), 'entries': len(final['entries']), 'slow_initialize_ms': round(row['initializeMs'])}
             results.append(result)
             print(json.dumps(result), flush=True)
         finally:

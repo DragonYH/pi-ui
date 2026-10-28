@@ -594,7 +594,8 @@ function restoreResourcePanel(
     const index = Math.min(bridge.originalIndex, bridge.parent.children.length);
     bridge.parent.children.splice(index, 0, bridge.panel);
   }
-  delete (tui as BridgeTui)[RESOURCE_BRIDGE_KEY];
+  // Pi 1.x forwards property writes through its TUI proxy, but not delete.
+  (tui as BridgeTui)[RESOURCE_BRIDGE_KEY] = undefined;
 }
 
 // ---------------------------------------------------------------------------
