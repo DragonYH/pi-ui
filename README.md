@@ -32,6 +32,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 
 - 🖥️ **Custom Status Bar** — Real-time footer display showing model name, thinking level, current working directory, git branch, context usage (%), token usage (↑input ↓output), and API cost — all in one glance
 - 📚 **Readable Startup Resources** — Skills and extensions show item counts in lists that adapt to terminal width. Package names and installed npm/Git versions are aligned in separate columns; long names wrap when needed. Empty Context, Prompts, and Themes sections are hidden. Skills are listed by name.
+- 🟢 **Inline Version Updates** — When Pi or an npm extension has a newer release, its version changes to `v1.2.0->v1.2.1`, with the new version highlighted in green. Update checks run in the background; packages without a welcome-screen row use a compact notice.
 - 🎨 **Catppuccin Dark Theme** — A meticulously crafted dark theme based on [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) with 64+ color mappings covering syntax highlighting, markdown rendering, thinking levels, UI components, and export backgrounds
 - ✨ **Boxed Editor** — Unicode border editor (`╭─╮` style) replacing the default editor with elegant rounded corners
 - ⏳ **Adaptive Working Indicator** — Animated spinner (󰪞→󰪥) at 120ms with **3-tone adaptive coloring** (green→yellow→red based on token recency). Now also shows **real-time elapsed time** (`Working... 󰅐 12.3s`) refreshed every 100ms — at-a-glance awareness of agent status and how long it's been thinking.
@@ -39,7 +40,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 - 💬 **Enhanced Message Rendering** — Custom assistant message renderer with optional expanded JSON details display; usage stats injected via `message_end` event and filtered via `context` event
 - 🔌 **Zero Dependencies** — Pure peer-dependency package; no additional npm packages required
 - ⚡ **TypeScript Native** — Source code loaded directly via [jiti](https://github.com/unjs/jiti) — no build step needed
-- 🧩 **Modular Architecture** — Six focused modules cover the entry point, UI setup, footer, editor, welcome layout, and installed package version lookup.
+- 🧩 **Modular Architecture** — Seven focused modules cover the entry point, UI setup, footer, editor, welcome layout, installed package versions, and update notices.
 
 ## 📦 Installation
 
@@ -146,7 +147,8 @@ pi-ui/
 │   ├── footer.ts             # Footer rendering — model, usage, context, git branch
 │   ├── editor.ts             # BoxedEditor component — Unicode border decoration
 │   ├── welcome.ts            # Startup header — resource counts and adaptive lists
-│   └── resource-versions.ts  # Installed package versions from local metadata
+│   ├── resource-versions.ts  # Installed package versions from local metadata
+│   └── update-notices.ts     # Inline Pi/package updates with green target versions
 ├── themes/
 │   └── catppuccin-dark.json  # Catppuccin Mocha dark theme (64+ color mappings)
 ├── .github/

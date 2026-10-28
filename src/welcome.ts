@@ -19,6 +19,12 @@ import {
   createPackageVersionResolver,
   type PackageVersionResolver,
 } from "./resource-versions.ts";
+import {
+  formatVersionChange,
+  isNewerVersion,
+  subscribeToUpdates,
+  type PackageUpdateNotice,
+} from "./update-notices.ts";
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -610,11 +616,12 @@ function wrapPrefixed(prefix: string, text: string, width: number): string[] {
 }
 
 function formatResourceItem(item: string, theme: Theme, nameWidth = 0): string {
-  const versioned = item.match(/^(.*?) {2}(v\S+(?: .*)?)$/);
+  const versioned = item.match(/^(.*?) {2}v(\S+)(.*)$/);
   if (!versioned) return theme.fg("text", item);
-  const [, name, version] = versioned;
+  const [, name, versions, revision] = versioned;
+  const [current, latest] = versions.split("->v");
   const padding = " ".repeat(Math.max(2, nameWidth - visibleWidth(name) + 2));
-  return `${theme.fg("text", name)}${padding}${theme.fg("dim", version)}`;
+  return `${theme.fg("text", name)}${padding}${formatVersionChange(current, latest, theme)}${theme.fg("dim", revision)}`;
 }
 
 function versionedNameWidth(items: string[]): number {
@@ -881,12 +888,14 @@ function appendResourceSection(
   );
 }
 
-function renderBrandColumn(theme: Theme, columnWidth: number): string[] {
+function renderBrandColumn(theme: Theme, columnWidth: number, latestPiVersion?: string): string[] {
   const lines = WIDE_LOGO.map((line) =>
     centerLineIn(theme.bold(theme.fg("accent", line)), columnWidth),
   );
   lines.push("");
-  lines.push(centerLineIn(theme.fg("dim", `v${VERSION}`), columnWidth));
+  lines.push(...wrapTextWithAnsi(
+    formatVersionChange(VERSION, latestPiVersion, theme), Math.max(1, columnWidth),
+  ).map((line) => centerLineIn(line, columnWidth)));
   return lines;
 }
 
@@ -1024,9 +1033,10 @@ function renderWideWelcome(
   theme: Theme,
   width: number,
   brandWidth: number,
+  latestPiVersion?: string,
 ): string[] {
   const contentWidth = width - brandWidth - GRID_COLUMN_GAP;
-  const brandLines = renderBrandColumn(theme, brandWidth);
+  const brandLines = renderBrandColumn(theme, brandWidth, latestPiVersion);
   const contentLines = renderContentColumn(resources, theme, contentWidth);
   const rowCount = Math.max(brandLines.length, contentLines.length);
   // 品牌列垂直居中：前面补空行，其余由 padToWidth 补到等宽
@@ -1048,9 +1058,10 @@ function renderNarrowWelcome(
   resources: WelcomeResources | undefined,
   theme: Theme,
   width: number,
+  latestPiVersion?: string,
 ): string[] {
   const columnWidth = Math.min(MAX_STACKED_COLUMN_WIDTH, width);
-  const lines = ["", ...renderBrandColumn(theme, columnWidth)];
+  const lines = ["", ...renderBrandColumn(theme, columnWidth, latestPiVersion)];
   if (resources) {
     lines.push("", ...renderResourceColumn(resources, theme, columnWidth));
   }
@@ -1068,6 +1079,7 @@ function renderWelcomeHeader(
   resources: WelcomeResources | undefined,
   theme: Theme,
   width: number,
+  latestPiVersion?: string,
 ): string[] {
   if (width <= 0) return [];
   const brandWidth = Math.max(BRAND_COLUMN_WIDTH, Math.floor(width / 3));
@@ -1075,9 +1087,9 @@ function renderWelcomeHeader(
     resources &&
     width >= brandWidth + GRID_COLUMN_GAP + MIN_RESOURCE_COLUMN_WIDTH
   ) {
-    return renderWideWelcome(resources, theme, width, brandWidth);
+    return renderWideWelcome(resources, theme, width, brandWidth, latestPiVersion);
   }
-  return renderNarrowWelcome(resources, theme, width);
+  return renderNarrowWelcome(resources, theme, width, latestPiVersion);
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,6 +1101,9 @@ class WelcomeHeader implements Component {
   private resources: WelcomeResources | undefined;
   private cachedWidth: number | undefined;
   private cachedLines: string[] | undefined;
+  private latestPiVersion: string | undefined;
+  private readonly latestPackageVersions = new Map<string, string>();
+  private readonly unsubscribeUpdates: () => void;
   private disposed = false;
 
   constructor(
@@ -1097,12 +1112,56 @@ class WelcomeHeader implements Component {
     private readonly bridge: ResourceBridge | undefined,
     private readonly resolveVersion: PackageVersionResolver,
     forceInitialRender: boolean,
+    cwd = process.cwd(),
   ) {
+    this.unsubscribeUpdates = subscribeToUpdates(tui, {
+      cwd,
+      theme,
+      onPiUpdate: (version) => {
+        this.latestPiVersion = version;
+        this.clearRenderCache();
+        this.tui.requestRender();
+      },
+      onPackageUpdates: (updates) => this.receivePackageUpdates(updates),
+    });
     // session_start 在核心填充 loaded-resources 面板之前触发，稍后再捕获。
     this.resourceReadyTimer = setTimeout(
       () => this.captureResourcesWhenReady(forceInitialRender, 0),
       0,
     );
+  }
+
+  private receivePackageUpdates(updates: PackageUpdateNotice[]): Set<string> {
+    const handled = new Set<string>();
+    for (const { name, latestVersion } of updates) {
+      if (!latestVersion) continue;
+      this.latestPackageVersions.set(name, latestVersion);
+      if (this.resources?.extensions.some((item) => item.startsWith(`${name}  v`))) {
+        handled.add(name);
+      }
+    }
+    this.clearRenderCache();
+    this.tui.requestRender();
+    return handled;
+  }
+
+  private resourcesWithUpdates(): WelcomeResources | undefined {
+    if (!this.resources || this.latestPackageVersions.size === 0) return this.resources;
+    const updateLabel = (item: string): string => {
+      const versioned = item.match(/^(.*?) {2}v(\S+)(.*)$/);
+      if (!versioned) return item;
+      const [, name, current, revision] = versioned;
+      const latest = this.latestPackageVersions.get(name);
+      return latest && isNewerVersion(latest, current)
+        ? `${name}  v${current}->v${latest.replace(/^v/, "")}${revision}`
+        : item;
+    };
+    return {
+      ...this.resources,
+      extensions: this.resources.extensions.map(updateLabel),
+      packageExtensions: this.resources.packageExtensions?.map(updateLabel),
+      vendoredExtensions: this.resources.vendoredExtensions?.map(updateLabel),
+    };
   }
 
   private captureResourcesWhenReady(
@@ -1180,8 +1239,8 @@ class WelcomeHeader implements Component {
       return this.cachedLines;
     }
 
-    const resources = this.resources;
-    const lines = renderWelcomeHeader(resources, this.theme, width);
+    const resources = this.resourcesWithUpdates();
+    const lines = renderWelcomeHeader(resources, this.theme, width, this.latestPiVersion);
     if (resources) {
       this.cachedWidth = width;
       this.cachedLines = lines;
@@ -1197,6 +1256,7 @@ class WelcomeHeader implements Component {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unsubscribeUpdates();
     if (this.resourceReadyTimer) clearTimeout(this.resourceReadyTimer);
     restoreResourcePanel(this.tui, this.bridge);
   }
@@ -1220,6 +1280,7 @@ export function installWelcomeHeader(
           takeResourcePanel(tui),
           createPackageVersionResolver(ctx.cwd),
           reason === "startup",
+          ctx.cwd,
         ),
     );
   } catch {

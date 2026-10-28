@@ -32,6 +32,7 @@ pi-ui 是一个 **pi-package** 扩展，为 [pi coding agent](https://github.com
 
 - 🖥️ **自定义状态栏** — 底部实时显示模型名称、思考级别、当前工作目录、Git 分支、上下文使用率（%）、Token 用量（↑输入 ↓输出）和 API 费用，一目了然
 - 📚 **清晰的启动资源列表** — 技能和扩展显示数量，并根据终端宽度自动分列；扩展包名与本机安装的 npm/Git 版本对齐显示，长名称在窄屏下自动换行。隐藏空的 Context、Prompts 和 Themes 区段；技能按名称显示。
+- 🟢 **行内版本更新提示** — Pi 或 npm 扩展有新版本时，原版本位置显示 `v1.2.0->v1.2.1`，新版本号以绿色高亮。更新检查在后台进行；不在欢迎屏列表中的包使用简洁的单行提示。
 - 🎨 **Catppuccin 深色主题** — 基于 [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) 精心调制的深色主题，包含 64+ 颜色映射，覆盖语法高亮、Markdown 渲染、思考级别、UI 组件和导出背景
 - ✨ **边框编辑器（Boxed Editor）** — 使用 Unicode 边框字符（`╭─╮` 风格）替代默认编辑器，呈现优雅圆角效果
 - ⏳ **自适应工作指示器** — 8 帧旋转动画（󰪞→󰥪）每 120ms 循环，具有**三色调自适应着色**：活跃 token 流时为绿色，10s 无响应变为黄色，30s 无响应变为红色，让你一眼感知 agent 状态
@@ -39,7 +40,7 @@ pi-ui 是一个 **pi-package** 扩展，为 [pi coding agent](https://github.com
 - 🔄 **事件驱动更新** — UI 在 `session_start` 自动初始化，追踪 agent 生命周期（`agent_start`/`message_update`/`agent_end`），并在 `thinking_level_select` 和 `session_shutdown` 时重新渲染
 - 🔌 **零依赖** — 纯对等依赖包，无需额外安装 npm 依赖
 - ⚡ **原生 TypeScript** — 源码通过 [jiti](https://github.com/unjs/jiti) 直接加载运行，无需编译步骤
-- 🧩 **模块化架构** — 六个专注模块分别负责扩展入口、UI 设置、状态栏、编辑器、欢迎屏布局和已安装包版本读取。
+- 🧩 **模块化架构** — 七个专注模块分别负责扩展入口、UI 设置、状态栏、编辑器、欢迎屏布局、已安装包版本读取和更新提示。
 
 ## 📦 安装
 
@@ -146,7 +147,8 @@ pi-ui/
 │   ├── footer.ts             # 状态栏渲染 — 模型、用量、上下文、Git 分支
 │   ├── editor.ts             # BoxedEditor 组件 — Unicode 边框装饰
 │   ├── welcome.ts            # 启动欢迎屏 — 资源数量与自适应列表
-│   └── resource-versions.ts  # 从本机元数据读取已安装包版本
+│   ├── resource-versions.ts  # 从本机元数据读取已安装包版本
+│   └── update-notices.ts     # Pi 与扩展行内更新提示，新版本绿色高亮
 ├── themes/
 │   └── catppuccin-dark.json  # Catppuccin Mocha 深色主题（64+ 颜色映射）
 ├── .github/

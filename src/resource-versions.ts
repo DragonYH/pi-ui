@@ -11,6 +11,20 @@ export type PackageVersionResolver = (
   scope?: "user" | "project",
 ) => string | undefined;
 
+export function readPackageVersion(root: string | undefined): string | undefined {
+  if (!root) return undefined;
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    if (manifest && typeof manifest === "object" && "version" in manifest &&
+        typeof manifest.version === "string" && /^[\w.+-]+$/.test(manifest.version)) {
+      return manifest.version;
+    }
+  } catch {
+    // Missing or invalid metadata must never prevent the welcome screen from rendering.
+  }
+  return undefined;
+}
+
 /** Resolve installed versions using Pi's own package locations, without network access. */
 export function createPackageVersionResolver(cwd: string): PackageVersionResolver {
   const manager = new DefaultPackageManager({
@@ -34,15 +48,7 @@ export function createPackageVersionResolver(cwd: string): PackageVersionResolve
       }
       if (!root) continue;
 
-      try {
-        const manifest: unknown = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-        if (manifest && typeof manifest === "object" && "version" in manifest &&
-            typeof manifest.version === "string" && /^[\w.+-]+$/.test(manifest.version)) {
-          version = manifest.version;
-        }
-      } catch {
-        // Missing or invalid metadata must never prevent the welcome screen from rendering.
-      }
+      version = readPackageVersion(root);
       // Do not inherit another scope's version when this installation has no valid metadata.
       break;
     }
