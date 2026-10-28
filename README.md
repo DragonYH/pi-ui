@@ -38,6 +38,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 - ✨ **Boxed Editor** — Unicode border editor (`╭─╮` style) replacing the default editor with elegant rounded corners
 - ⏳ **Adaptive Working Indicator** — Animated spinner (󰪞→󰪥) at 120ms with **3-tone adaptive coloring** (green→yellow→red based on token recency). Shows cumulative output tokens and elapsed time for the current task (`Working... (↓ 1.2k tokens · 12s)`), including thinking and tool-call arguments.
 - 📊 **Per-Message Usage Stats** — After each assistant reply, a **token/cost/duration summary** is displayed inline (`↑271 ↓50 · $0.0017 · 󰅐 4.1s`) with a matching-width separator line. Stats are displayed only — **automatically stripped from LLM context** to avoid polluting the conversation.
+- 🧰 **Compact Tool Cards** — Rounded frames with execution state, recorded duration, and a four-row result preview. Shell output keeps its latest lines; successful file reads collapse to a hidden-line hint. Expand with your configured tool shortcut or a click; native diffs and extension tools share the same frame (Pi 1.4+).
 - 💬 **Enhanced Message Rendering** — Custom assistant message renderer with optional expanded JSON details display; usage stats injected via `message_end` event and filtered via `context` event
 - 🔌 **Zero Dependencies** — Pure peer-dependency package; no additional npm packages required
 - ⚡ **TypeScript Native** — Source code loaded directly via [jiti](https://github.com/unjs/jiti) — no build step needed
@@ -114,6 +115,31 @@ The default message editor is replaced with a **BoxedEditor** that uses Unicode 
 ╰──────────────────────────────────────────╯
 ```
 
+### Tool Cards
+
+Tool calls use the same rounded visual language as the editor:
+
+```text
+╭─ ✓ $ npm test ──────────────────────── done · 100 ms ─╮
+│ … 16+ lines hidden                                    │
+│ test 17 passed                                        │
+│ test 18 passed                                        │
+│ test 19 passed                                        │
+│ test 20 passed                                        │
+╰─────────────────────────────────────── ctrl+o expand ─╯
+```
+
+- The single top border distinguishes preparing, queued, running, `done`, and `fail` calls. Its right-hand area uses 13 terminal columns by default (`done · 100 ms`), with one outer space on each side, and aligns with `ctrl+o expand` below. `fold` keeps the expanded control within the same width. Long custom shortcuts enlarge both areas together; narrow cards prioritize the shortcut. All widths use terminal display columns. Missing durations use `—`; longer durations use compact units.
+- Collapsed results show at most four visual rows, plus an omission hint in the body. Shell tools place the hint above their tail preview; other tools place it below their head preview. Successful `read` calls collapse to an omission hint. Errors retain a visible preview, and output truncation and full-log paths are shown separately.
+- Use the configured tool expansion shortcut (normally **Ctrl+O**) or click the card to expand/collapse through Pi. Expanded built-in results retain native syntax highlighting; image display stays under Pi's control.
+- The frame aligns with the input editor on the left and leaves one column clear on the right for the scrollbar. Tool names use a warm heading color, commands use cyan/teal, and paths use muted text; frame accents and output retain separate colors. The bottom border contains only the expansion control; total line counts are omitted.
+- Native edit/diff previews and custom extension tools, including `skill_manage` and `todo`, use the same frame while retaining their content and controls. Interactive controls remain visible when collapsed.
+- Completed output parsing is cached. Collapsed results only wrap their preview lines, and cards add no polling timers.
+
+Cards require Pi's `registerToolRenderer` API, verified on **Pi 1.4.0**. Older versions retain their existing tool rendering. The renderer changes display only; tool definitions, execution, model context, and stored results are preserved.
+
+Development checks: `npm test`, `npm run typecheck`, and `npm run lint`. With Pi installed, run `node tests/tool-cards-runtime.mjs` to exercise its real loader and tool components across themes, terminal widths, errors, and expansion; an ANSI preview is saved under `.pi/`.
+
 ### Working Indicator
 
 The default "Working..." indicator is replaced with an animated **spinner sequence** (󰪞 󰪟 󰪠 󰪡 󰪢 󰪣 󰪤 󰪥) cycling every 120ms. The spinner features **3-tone adaptive coloring**:
@@ -168,6 +194,7 @@ pi-ui/
 ├── src/
 │   ├── index.ts              # Extension entry — registers events
 │   ├── ui.ts                 # UI setup — footer, BoxedEditor, message renderer
+│   ├── tool-cards.ts         # Compact tool frames, result previews, renderer compatibility
 │   ├── working.ts            # Working row — output tokens, elapsed time, adaptive spinner
 │   ├── footer.ts             # Footer rendering — model, usage, context, git branch
 │   ├── editor.ts             # BoxedEditor component — Unicode border decoration
