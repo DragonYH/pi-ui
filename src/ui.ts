@@ -40,8 +40,8 @@ export function clearWorkingIndicatorTimer(): void {
   agentStartTime = 0;
 }
 
-export function registerMessageRenderer(pi: ExtensionAPI): void {
-  pi.registerMessageRenderer('assistant', (message, options, theme) => {
+export function registerMessageRenderer(pi: ExtensionAPI): Parameters<ExtensionAPI["registerMessageRenderer"]>[1] {
+  const renderer: Parameters<ExtensionAPI["registerMessageRenderer"]>[1] = (message, options, theme) => {
     const { expanded } = options;
     let text = '';
     text += (message as { content: string }).content;
@@ -49,7 +49,9 @@ export function registerMessageRenderer(pi: ExtensionAPI): void {
       text += '\n' + theme.fg('dim', JSON.stringify(message.details, null, 2));
     }
     return new Text(text, 0, 0);
-  });
+  };
+  pi.registerMessageRenderer('assistant', renderer);
+  return renderer;
 }
 
 export function setupCustomUI(

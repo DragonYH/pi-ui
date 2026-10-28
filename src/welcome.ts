@@ -20,6 +20,13 @@ import {
   type PackageVersionResolver,
 } from "./resource-versions.ts";
 import {
+  PI_LOGO,
+  formatStartupDuration,
+  getStartupProgress,
+  startupDurationForLabel,
+} from "./startup/progress.ts";
+import { renderStartupProgress } from "./startup/view.ts";
+import {
   formatVersionChange,
   isNewerVersion,
   subscribeToUpdates,
@@ -61,14 +68,7 @@ const ONBOARDING_LINE =
   "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.";
 
 // 现有欢迎屏 logo（6 行块状 "pi" 字符画）
-const WIDE_LOGO = [
-  "██████╗  ██╗",
-  "██╔══██╗ ██║",
-  "██████╔╝ ██║",
-  "██╔═══╝  ██║",
-  "██║      ██║",
-  "╚═╝      ╚═╝",
-] as const;
+const WIDE_LOGO = PI_LOGO;
 
 // ---------------------------------------------------------------------------
 // 资源解析（桥接核心 loaded-resources 面板）
@@ -565,13 +565,21 @@ function takeResourcePanel(tui: TUI): ResourceBridge | undefined {
   const host = tui as BridgeTui;
   if (host[RESOURCE_BRIDGE_KEY]) return undefined;
 
-  const parent = findResourceParent(tui);
+  // The early progress header replaces the native ExpandableText before this
+  // factory runs. Its controller supplies the verified container location.
+  const location = getStartupProgress()?.resourcePanel?.();
+  const hinted = location && isResourcePanel(location.parent) &&
+    isResourcePanel(location.panel) && location.parent.children.includes(location.panel)
+    ? { parent: location.parent, panel: location.panel }
+    : undefined;
+  const parent = hinted?.parent ?? findResourceParent(tui);
   if (!parent) return undefined;
-  const panel = parent.children[RESOURCE_PANEL_INDEX];
+  const originalIndex = hinted ? parent.children.indexOf(hinted.panel) : RESOURCE_PANEL_INDEX;
+  const panel = parent.children[originalIndex];
   if (!isResourcePanel(panel)) return undefined;
 
-  const bridge = { panel, parent, originalIndex: RESOURCE_PANEL_INDEX };
-  parent.children.splice(RESOURCE_PANEL_INDEX, 1);
+  const bridge = { panel, parent, originalIndex };
+  parent.children.splice(originalIndex, 1);
   host[RESOURCE_BRIDGE_KEY] = bridge;
   return bridge;
 }
@@ -1104,6 +1112,8 @@ class WelcomeHeader implements Component {
   private latestPiVersion: string | undefined;
   private readonly latestPackageVersions = new Map<string, string>();
   private readonly unsubscribeUpdates: () => void;
+  private readonly startup = getStartupProgress();
+  private readonly unsubscribeStartup: (() => void) | undefined;
   private disposed = false;
 
   constructor(
@@ -1114,6 +1124,14 @@ class WelcomeHeader implements Component {
     forceInitialRender: boolean,
     cwd = process.cwd(),
   ) {
+    this.unsubscribeStartup = this.startup?.subscribe(() => {
+      this.clearRenderCache();
+      this.tui.requestRender();
+      if (!this.startup?.snapshot().active) {
+        if (this.resourceReadyTimer) clearTimeout(this.resourceReadyTimer);
+        this.resourceReadyTimer = setTimeout(() => this.captureResourcesWhenReady(false, 0), 0);
+      }
+    });
     this.unsubscribeUpdates = subscribeToUpdates(tui, {
       cwd,
       theme,
@@ -1146,20 +1164,24 @@ class WelcomeHeader implements Component {
   }
 
   private resourcesWithUpdates(): WelcomeResources | undefined {
-    if (!this.resources || this.latestPackageVersions.size === 0) return this.resources;
+    if (!this.resources) return this.resources;
+    const startup = this.startup?.snapshot();
     const updateLabel = (item: string): string => {
+      const duration = startup && !startup.active ? startupDurationForLabel(item, startup) : undefined;
+      const timing = duration === undefined ? "" : `  (init ${formatStartupDuration(duration)})`;
       const versioned = item.match(/^(.*?) {2}v(\S+)(.*)$/);
-      if (!versioned) return item;
+      if (!versioned) return item + timing;
       const [, name, current, revision] = versioned;
       const latest = this.latestPackageVersions.get(name);
-      return latest && isNewerVersion(latest, current)
+      return (latest && isNewerVersion(latest, current)
         ? `${name}  v${current}->v${latest.replace(/^v/, "")}${revision}`
-        : item;
+        : item) + timing;
     };
     return {
       ...this.resources,
       extensions: this.resources.extensions.map(updateLabel),
       packageExtensions: this.resources.packageExtensions?.map(updateLabel),
+      sourceExtensions: this.resources.sourceExtensions?.map(updateLabel),
       vendoredExtensions: this.resources.vendoredExtensions?.map(updateLabel),
     };
   }
@@ -1212,7 +1234,11 @@ class WelcomeHeader implements Component {
       // 先渲染品牌列，等完整快照到达后再原子切换为完整布局。
       this.tui.requestRender(forceInitialRender);
     }
-    if (attempt < MAX_RESOURCE_RETRIES) {
+    if (this.startup?.snapshot().active) {
+      this.resourceReadyTimer = setTimeout(
+        () => this.captureResourcesWhenReady(false, attempt), RESOURCE_POLL_INTERVAL_MS,
+      );
+    } else if (attempt < MAX_RESOURCE_RETRIES) {
       this.resourceReadyTimer = setTimeout(
         () => this.captureResourcesWhenReady(false, attempt + 1),
         RESOURCE_POLL_INTERVAL_MS,
@@ -1235,6 +1261,10 @@ class WelcomeHeader implements Component {
   }
 
   render(width: number): string[] {
+    const startup = this.startup?.snapshot();
+    if (startup?.active) {
+      return renderStartupProgress(startup, width, (tone, text) => this.theme.fg(tone, text), Math.max(1, this.tui.terminal.rows - 8));
+    }
     if (this.cachedLines && this.cachedWidth === width) {
       return this.cachedLines;
     }
@@ -1256,6 +1286,7 @@ class WelcomeHeader implements Component {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unsubscribeStartup?.();
     this.unsubscribeUpdates();
     if (this.resourceReadyTimer) clearTimeout(this.resourceReadyTimer);
     restoreResourcePanel(this.tui, this.bridge);

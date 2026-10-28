@@ -32,6 +32,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 
 - 🖥️ **Custom Status Bar** — Real-time footer display showing model name, thinking level, current working directory, git branch, context usage (%), token usage (↑input ↓output), and API cost — all in one glance
 - 📚 **Readable Startup Resources** — Skills and extensions show item counts in lists that adapt to terminal width. Package names and installed npm/Git versions are aligned in separate columns; long names wrap when needed. Empty Context, Prompts, and Themes sections are hidden. Skills are listed by name.
+- 🌀 **Native Startup Initialization Progress** — Run `pi` normally: its first screen animates a trail around the PI logo, pi-ui initializes first, and extensions appear progressively with measured session initialization times.
 - 🟢 **Inline Version Updates** — When Pi or an npm extension has a newer release, its version changes to `v1.2.0->v1.2.1`, with the new version highlighted in green. Update checks run in the background; packages without a welcome-screen row use a compact notice.
 - 🎨 **Catppuccin Dark Theme** — A meticulously crafted dark theme based on [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) with 64+ color mappings covering syntax highlighting, markdown rendering, thinking levels, UI components, and export backgrounds
 - ✨ **Boxed Editor** — Unicode border editor (`╭─╮` style) replacing the default editor with elegant rounded corners
@@ -40,7 +41,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 - 💬 **Enhanced Message Rendering** — Custom assistant message renderer with optional expanded JSON details display; usage stats injected via `message_end` event and filtered via `context` event
 - 🔌 **Zero Dependencies** — Pure peer-dependency package; no additional npm packages required
 - ⚡ **TypeScript Native** — Source code loaded directly via [jiti](https://github.com/unjs/jiti) — no build step needed
-- 🧩 **Modular Architecture** — Seven focused modules cover the entry point, UI setup, footer, editor, welcome layout, installed package versions, and update notices.
+- 🧩 **Modular Architecture** — Focused modules cover the entry point, UI setup, footer, editor, welcome layout, installed package versions, update notices, and startup progress.
 
 ## 📦 Installation
 
@@ -76,6 +77,21 @@ Once installed, pi-ui works **completely automatically** — no configuration re
 2. **On agent activity** (`agent_start` → `message_update` → `agent_end`) — the working indicator adapts its color in real-time, and the footer stats refresh
 3. **On thinking level change** (`thinking_level_select`) — the thinking level indicator in the footer updates
 4. **On session shutdown** (`session_shutdown`) — all working timers are cleaned up gracefully
+
+### Startup Progress
+
+Run `pi` normally after installation. No additional entry point or command alias is needed. Verified with Pi **1.4.0** in regular and fullscreen mode.
+
+- The extension factory adapts the SDK lifecycle in the current process and mounts the animation in Pi's existing UI tree, so the native terminal's first frame already contains the PI animation.
+- Only the `session_start` emission snapshot puts pi-ui first, installing the welcome screen, editor, and footer before other extensions initialize. Other extensions keep their relative order, and other event ordering stays unchanged.
+- The trail moves every 80 ms. Each extension appears when its initialization begins, showing its current state and elapsed time.
+- Timings accumulate all of an extension's `session_start` handlers. Extensions without a handler are identified as such and take 0 ms; earlier module imports and factory registration are excluded.
+- Startup completion stops the animation and restores the welcome screen, keeping `(init 640 ms)` next to matched names or versions. Errors retain Pi's native reporting and also appear in the progress list.
+- `/reload` and session changes start a fresh timing run, shutdown clears timers, narrow terminals stack the logo and list, and noninteractive modes skip the animation.
+
+**Module import boundary:** Pi imports extensions and runs their factories before it creates the terminal UI and emits `session_start`. Its loader provides no event that hands the remaining import queue to a plugin, so initialization progress cannot reconstruct those earlier timings. This project does not rewrite installed Pi files or global settings and has no alternative startup command. Synchronous code can block animation until it returns control to the event loop.
+
+Development checks: `npm test` exercises the real SDK emitter for ordering, timing, errors, and layout. `python3 tests/startup-pty.py` directly runs native `pi` with isolated fixtures inside this project, covering regular/fullscreen mode, `/reload`, initialization failures, and unchanged installed files/global settings. The integration depends on SDK UI and event implementation details; rerun these checks after upgrading Pi.
 
 ### Status Bar Layout
 
@@ -148,7 +164,9 @@ pi-ui/
 │   ├── editor.ts             # BoxedEditor component — Unicode border decoration
 │   ├── welcome.ts            # Startup header — resource counts and adaptive lists
 │   ├── resource-versions.ts  # Installed package versions from local metadata
-│   └── update-notices.ts     # Inline Pi/package updates with green target versions
+│   ├── update-notices.ts     # Inline Pi/package updates with green target versions
+│   └── startup/              # Native UI lifecycle integration, initialization timings, PI animation
+├── tests/                    # Timing/layout tests and real-terminal verification
 ├── themes/
 │   └── catppuccin-dark.json  # Catppuccin Mocha dark theme (64+ color mappings)
 ├── .github/

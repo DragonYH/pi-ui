@@ -13,7 +13,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.ts"],
+    files: ["src/**/*.ts", "tests/**/*.ts"],
     rules: {
       "@typescript-eslint/consistent-type-imports": [
         "warn",
