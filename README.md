@@ -36,7 +36,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 - 🟢 **Inline Version Updates** — When Pi or an npm extension has a newer release, its version changes to `v1.2.0->v1.2.1`, with the new version highlighted in green. Update checks run in the background; packages without a welcome-screen row use a compact notice.
 - 🎨 **Catppuccin Dark Theme** — A meticulously crafted dark theme based on [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) with 64+ color mappings covering syntax highlighting, markdown rendering, thinking levels, UI components, and export backgrounds
 - ✨ **Boxed Editor** — Unicode border editor (`╭─╮` style) replacing the default editor with elegant rounded corners
-- ⏳ **Adaptive Working Indicator** — Animated spinner (󰪞→󰪥) at 120ms with **3-tone adaptive coloring** (green→yellow→red based on token recency). Now also shows **real-time elapsed time** (`Working... 󰅐 12.3s`) refreshed every 100ms — at-a-glance awareness of agent status and how long it's been thinking.
+- ⏳ **Adaptive Working Indicator** — Animated spinner (󰪞→󰪥) at 120ms with **3-tone adaptive coloring** (green→yellow→red based on token recency). Shows cumulative output tokens and elapsed time for the current task (`Working... (↓ 1.2k tokens · 12s)`), including thinking and tool-call arguments.
 - 📊 **Per-Message Usage Stats** — After each assistant reply, a **token/cost/duration summary** is displayed inline (`↑271 ↓50 · $0.0017 · 󰅐 4.1s`) with a matching-width separator line. Stats are displayed only — **automatically stripped from LLM context** to avoid polluting the conversation.
 - 💬 **Enhanced Message Rendering** — Custom assistant message renderer with optional expanded JSON details display; usage stats injected via `message_end` event and filtered via `context` event
 - 🔌 **Zero Dependencies** — Pure peer-dependency package; no additional npm packages required
@@ -124,7 +124,15 @@ The default "Working..." indicator is replaced with an animated **spinner sequen
 | 🟡 Yellow | 10–30s since last token          | Thinking / idle |
 | 🔴 Red    | > 30s since last token           | Possible stall  |
 
-The indicator starts on `agent_start`, resets on each incoming token (`message_update`), and stops on `agent_end`, giving you real-time awareness of agent activity.
+The indicator starts on `agent_start`, resets its color on incoming assistant stream events (`message_update`), and stops on `agent_end`.
+
+Following the [pi-cc-extensions Working row](https://github.com/minuque/pi-cc-extensions), it also displays the current task's cumulative output tokens and elapsed time:
+
+```text
+Working... (↓ 1.2k tokens · 12s)
+```
+
+Text, thinking, and tool-call argument deltas contribute to a live token estimate. Provider-reported output usage corrects that estimate when available, including hidden reasoning; input and cached tokens are excluded. Counts continue across tool calls and reset for the next agent run. The timer includes model and tool waits, uses seconds/minutes/hours, and updates every 100ms. Before any output, only waits of at least 3 seconds show a timer. Shutdown, reload, and session replacement clear the working state and timers.
 
 ## 🎨 Themes
 
@@ -159,7 +167,8 @@ See the [pi themes documentation](https://github.com/earendil-works/pi/blob/main
 pi-ui/
 ├── src/
 │   ├── index.ts              # Extension entry — registers events
-│   ├── ui.ts                 # UI setup — footer, BoxedEditor, working indicator, message renderer
+│   ├── ui.ts                 # UI setup — footer, BoxedEditor, message renderer
+│   ├── working.ts            # Working row — output tokens, elapsed time, adaptive spinner
 │   ├── footer.ts             # Footer rendering — model, usage, context, git branch
 │   ├── editor.ts             # BoxedEditor component — Unicode border decoration
 │   ├── welcome.ts            # Startup header — resource counts and adaptive lists
@@ -199,12 +208,12 @@ pi-ui/
 │  │                                editor                  │  │
 │  │                                spinner                 │  │
 │  │                                messageRenderer         │  │
-│  │  agent_start        ──►  startWorkingTimer()           │  │
-│  │  message_update     ──►  reset token timestamp         │  │
-│  │  agent_end          ──►  stopWorkingTimer()            │  │
+│  │  agent_start        ──►  reset tokens, start timer      │  │
+│  │  message_update     ──►  count tokens, update color     │  │
+│  │  agent_end          ──►  stop timer, reset message      │  │
 │  │                     ──►  rerenderFooter()              │  │
 │  │  thinking_level_select ──►  rerenderFooter()            │  │
-│  │  session_shutdown   ──►  clearWorkingIndicatorTimer()  │  │
+│  │  session_shutdown   ──►  dispose working state          │  │
 │  └───────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -213,12 +222,13 @@ pi-ui/
 
 | Event | Handler | Description |
 |-------|---------|-------------|
-| `session_start` | `setupCustomUI()` | Registers footer, BoxedEditor, working indicator, and message renderer |
-| `session_shutdown` | `clearWorkingIndicatorTimer()` | Cleans up timers on session end |
-| `agent_start` | `startWorkingTimer()` | Begins the adaptive working indicator (green) with elapsed time counter; re-renders footer |
-| `message_update` | reset `lastTokenTime` | Updates token timestamp; the 100ms interval timer adjusts the spinner color and elapsed time accordingly |
-| `message_end` | append usage stats | Injects per-message token/cost/duration stats into assistant message content for display |
-| `agent_end` | `stopWorkingTimer()` | Stops the working indicator, clears the working message after 2s, and re-renders footer |
+| `session_start` | `setupCustomUI()` / working lifecycle | Registers footer, BoxedEditor, message renderer, and working UI context |
+| `session_shutdown` | dispose working state | Cleans up timers and UI context on session end |
+| `agent_start` | reset working state | Resets task token totals, starts the adaptive spinner and elapsed timer; re-renders footer |
+| `message_start` | reset message estimate | Starts a fresh output-token estimate for each assistant response |
+| `message_update` | count output tokens | Counts text/thinking/tool-call deltas, incorporates provider usage, and refreshes color and working text |
+| `message_end` | finalize output usage / append usage stats | Adds assistant output usage to task totals; also displays existing per-message token/cost/duration stats |
+| `agent_end` | stop working timer | Stops refreshing, restores the default working message, and re-renders footer |
 | `thinking_level_select` | `rerenderFooter()` | Updates the thinking level label in the footer |
 | `context` | strip usage stats | Filters out the usage stats text blocks before messages are sent to the LLM, keeping context clean |
 

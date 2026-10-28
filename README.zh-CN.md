@@ -36,7 +36,7 @@ pi-ui 是一个 **pi-package** 扩展，为 [pi coding agent](https://github.com
 - 🟢 **行内版本更新提示** — Pi 或 npm 扩展有新版本时，原版本位置显示 `v1.2.0->v1.2.1`，新版本号以绿色高亮。更新检查在后台进行；不在欢迎屏列表中的包使用简洁的单行提示。
 - 🎨 **Catppuccin 深色主题** — 基于 [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) 精心调制的深色主题，包含 64+ 颜色映射，覆盖语法高亮、Markdown 渲染、思考级别、UI 组件和导出背景
 - ✨ **边框编辑器（Boxed Editor）** — 使用 Unicode 边框字符（`╭─╮` 风格）替代默认编辑器，呈现优雅圆角效果
-- ⏳ **自适应工作指示器** — 8 帧旋转动画（󰪞→󰥪）每 120ms 循环，具有**三色调自适应着色**：活跃 token 流时为绿色，10s 无响应变为黄色，30s 无响应变为红色，让你一眼感知 agent 状态
+- ⏳ **自适应工作指示器** — 旋转动画每 120ms 循环，具有**三色调自适应着色**：活跃 token 流时为绿色，10s 无响应变为黄色，30s 无响应变为红色。同时显示当前任务累计输出 token 与耗时，例如 `Working... (↓ 1.2k tokens · 12s)`，包含思考内容和工具调用参数。
 - 💬 **增强消息渲染** — 自定义助手消息渲染器，支持展开查看 JSON 详细信息
 - 🔄 **事件驱动更新** — UI 在 `session_start` 自动初始化，追踪 agent 生命周期（`agent_start`/`message_update`/`agent_end`），并在 `thinking_level_select` 和 `session_shutdown` 时重新渲染
 - 🔌 **零依赖** — 纯对等依赖包，无需额外安装 npm 依赖
@@ -124,7 +124,15 @@ pi install ./
 | 🟡 黄色 | 10–30 秒无新 token | 思考中 / 空闲 |
 | 🔴 红色 | > 30 秒无新 token | 可能卡住 |
 
-指示器在 `agent_start` 时启动，每个 `message_update` 事件重置计时，`agent_end` 时停止，让你实时了解 agent 状态。
+指示器在 `agent_start` 时启动，每个助手流式事件（`message_update`）重置颜色计时，`agent_end` 时停止。
+
+参考 [pi-cc-extensions 的 Working 行](https://github.com/minuque/pi-cc-extensions)，在提示后显示当前任务累计输出 token 和耗时：
+
+```text
+Working... (↓ 1.2k tokens · 12s)
+```
+
+流式输出时根据正文、思考内容和工具调用参数估算 token，收到服务商报告的输出用量后校准，并计入隐藏思考用量；不包含输入或缓存 token。工具执行后的下一轮回复继续累计，下一次 agent 任务重新计数。耗时包含模型等待和工具执行时间，每 100ms 刷新，自动使用秒、分、小时；尚无输出时，等待满 3 秒才显示计时。关闭、重载或切换会话时清理状态和计时器。
 
 ## 🎨 主题
 
@@ -159,7 +167,8 @@ pi-ui 安装后主题自动注册。你可以在 pi 中切换主题：
 pi-ui/
 ├── src/
 │   ├── index.ts              # 扩展入口 — 注册事件
-│   ├── ui.ts                 # UI 设置 — 状态栏、BoxedEditor、工作指示器、消息渲染器
+│   ├── ui.ts                 # UI 设置 — 状态栏、BoxedEditor、消息渲染器
+│   ├── working.ts            # Working 行 — 输出 token、耗时和自适应旋转动画
 │   ├── footer.ts             # 状态栏渲染 — 模型、用量、上下文、Git 分支
 │   ├── editor.ts             # BoxedEditor 组件 — Unicode 边框装饰
 │   ├── welcome.ts            # 启动欢迎屏 — 资源数量与自适应列表
@@ -198,12 +207,12 @@ pi-ui/
 │  │                               编辑器                    │  │
 │  │                               工作指示器                │  │
 │  │                               消息渲染器                │  │
-│  │  agent_start        ──►  startWorkingTimer()           │  │
-│  │  message_update     ──►  重置 token 时间戳              │  │
-│  │  agent_end          ──►  stopWorkingTimer()            │  │
+│  │  agent_start        ──►  重置 token，启动计时          │  │
+│  │  message_update     ──►  累计 token，更新颜色          │  │
+│  │  agent_end          ──►  停止计时，恢复默认提示        │  │
 │  │                     ──►  rerenderFooter()              │  │
 │  │  thinking_level_select ──►  rerenderFooter()           │  │
-│  │  session_shutdown   ──►  clearWorkingIndicatorTimer() │  │
+│  │  session_shutdown   ──►  清理工作状态和计时器          │  │
 │  └───────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -212,12 +221,13 @@ pi-ui/
 
 | 事件 | 处理函数 | 说明 |
 |------|----------|------|
-| `session_start` | `setupCustomUI()` | 注册状态栏、BoxedEditor、工作指示器和消息渲染器 |
-| `session_shutdown` | `clearWorkingIndicatorTimer()` | 会话结束时清理计时器 |
-| `agent_start` | `startWorkingTimer()` | 启动自适应工作指示器（绿色），开始计时；刷新状态栏 |
-| `message_update` | 重置 `lastTokenTime` | 更新 token 时间戳；100ms 间隔定时器据此调整旋转颜色和耗时显示 |
-| `message_end` | 追加用量统计 | 将每次请求的 token/费用/耗时统计注入 assistant 消息内容用于展示 |
-| `agent_end` | `stopWorkingTimer()` | 停止工作指示器，2 秒后恢复默认消息，刷新状态栏 |
+| `session_start` | `setupCustomUI()` / 工作状态生命周期 | 注册状态栏、BoxedEditor、消息渲染器和工作指示器上下文 |
+| `session_shutdown` | 清理工作状态 | 会话结束时清理计时器和 UI 上下文 |
+| `agent_start` | 重置工作状态 | 重置任务 token，启动自适应旋转动画和计时；刷新状态栏 |
+| `message_start` | 重置消息估算 | 为每条助手回复开始新的输出 token 估算 |
+| `message_update` | 累计输出 token | 统计正文、思考和工具参数增量，合并服务商用量，更新颜色与提示 |
+| `message_end` | 校准输出用量 / 追加用量统计 | 将助手输出用量计入任务累计值；同时保留现有的逐条 token/费用/耗时展示 |
+| `agent_end` | 停止工作计时 | 停止刷新，恢复默认工作提示，刷新状态栏 |
 | `thinking_level_select` | `rerenderFooter()` | 更新状态栏中的思考级别标签 |
 | `context` | 剥离用量统计 | 在消息发送给 LLM 前过滤掉用量统计文本块，保持上下文干净 |
 
