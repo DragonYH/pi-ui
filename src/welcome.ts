@@ -15,6 +15,10 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import {
+  createPackageVersionResolver,
+  type PackageVersionResolver,
+} from "./resource-versions.ts";
 
 // ---------------------------------------------------------------------------
 // 常量
@@ -38,7 +42,7 @@ export const LIST_COLUMN_GAP = 2;
 export const RESOURCE_POLL_INTERVAL_MS = 50;
 // 资源面板捕获的最大重试次数
 export const MAX_RESOURCE_RETRIES = 3;
-// 核心 loaded-resources 面板在 TUI children 中的下标
+// 核心 loaded-resources 面板在 header 所在容器中的下标
 export const RESOURCE_PANEL_INDEX = 1;
 // 挂在 TUI 上防止重复桥接的标记
 export const RESOURCE_BRIDGE_KEY = "@rokiy/pi-ui:welcome:resource-bridge";
@@ -90,6 +94,8 @@ export interface WelcomeResources {
 interface CollapsedTextComponent extends Component {
   getCollapsedText?: () => string;
   getExpandedText?: () => string;
+  setExpanded?: (expanded: boolean) => void;
+  state?: { expanded: boolean };
 }
 
 interface ResourcePanel extends Component {
@@ -98,6 +104,7 @@ interface ResourcePanel extends Component {
 
 interface ResourceBridge {
   panel: ResourcePanel;
+  parent: ResourcePanel;
   originalIndex: number;
 }
 
@@ -122,7 +129,7 @@ function stripAnsi(text: string): string {
 }
 
 function isResourcePanel(
-  component: Component | undefined,
+  component: unknown,
 ): component is ResourcePanel {
   if (!component || typeof component !== "object") return false;
   return Array.isArray((component as Partial<Container>).children);
@@ -134,22 +141,47 @@ function getSectionHeading(text: string): string | undefined {
     .match(/^\[([^\]]+)\]$/)?.[1];
 }
 
+/** Pi 0.x exposes text getters; Pi 1.x renders its expandable text on demand. */
+function readResourceText(component: Component): {
+  collapsed: string;
+  expanded?: string;
+} | undefined {
+  const expandable = component as CollapsedTextComponent;
+  if (typeof expandable.getCollapsedText === "function") {
+    return {
+      collapsed: expandable.getCollapsedText(),
+      expanded: expandable.getExpandedText?.(),
+    };
+  }
+  if (
+    typeof expandable.setExpanded !== "function" ||
+    typeof expandable.state?.expanded !== "boolean"
+  ) return undefined;
+
+  const wasExpanded = expandable.state.expanded;
+  try {
+    expandable.setExpanded(false);
+    const collapsed = expandable.render(16_384).join("\n");
+    expandable.setExpanded(true);
+    const expanded = expandable.render(16_384).join("\n");
+    return { collapsed, expanded };
+  } finally {
+    expandable.setExpanded(wasExpanded);
+  }
+}
+
 function inspectResourcePanel(panel: ResourcePanel): ResourcePanelSnapshot {
   const sections: string[] = [];
   let expandedExtensionsText: string | undefined;
 
   for (const child of panel.children) {
-    const collapsible = child as CollapsedTextComponent;
-    if (typeof collapsible.getCollapsedText === "function") {
-      const text = collapsible.getCollapsedText();
-      const heading = getSectionHeading(text);
+    const text = readResourceText(child);
+    if (text) {
+      const heading = getSectionHeading(text.collapsed);
       if (WELCOME_SECTIONS.some((section) => section === heading)) {
-        sections.push(text);
-        if (
-          heading === "Extensions" &&
-          typeof collapsible.getExpandedText === "function"
-        ) {
-          expandedExtensionsText = collapsible.getExpandedText();
+        sections.push(text.collapsed);
+        if (heading === "Extensions") {
+          expandedExtensionsText = text.expanded;
         }
       } else {
         // 未知的原生区段可能包含可操作信息，恢复原生面板而不是冒险猜测。
@@ -200,10 +232,11 @@ export function normalizeExtensionName(label: string): string {
 }
 
 function isSelfExtension(name: string): boolean {
+  name = name.split(/\s{2}v/)[0] ?? name;
   const normalized = name.replace(/\\/g, "/");
   return (
-    name === "pi-ui" ||
-    name === "@rokiy/pi-ui" ||
+    /^pi-ui(?:@|$)/.test(name) ||
+    /^@rokiy\/pi-ui(?:@|$)/.test(name) ||
     name === "src" ||
     normalized === "./src/index.ts" ||
     normalized.endsWith("/src/index.ts") ||
@@ -289,13 +322,25 @@ function parseGitPackageSource(source: string): GitPackageSource {
   };
 }
 
-function formatPackageExtensionLabel(source: string): string {
+function formatPackageExtensionLabel(
+  source: string,
+  resolveVersion?: PackageVersionResolver,
+  scope?: "user" | "project",
+): string {
+  const version = resolveVersion?.(source, scope);
   if (!source.startsWith("git:")) {
-    return normalizePackageSource(source);
+    const label = normalizePackageSource(source);
+    // Replace a configured range/tag with the actual installed version when available.
+    const name = label.match(/^(@[^/]+\/[^@]+|[^@]+)(?:@.*)?$/)?.[1] ?? label;
+    return version ? `${name}  v${version}` : label;
   }
 
   const { label, revision } = parseGitPackageSource(source);
-  return [label, ...(revision ? [`@${revision.slice(0, 6)}`] : [])].join(" ");
+  return [
+    label,
+    ...(version ? [` v${version}`] : []),
+    ...(revision ? [`@${revision.slice(0, 6)}`] : []),
+  ].join(" ");
 }
 
 function isExplicitSourcePath(label: string): boolean {
@@ -313,6 +358,7 @@ function isExplicitSourcePath(label: string): boolean {
 function parseExpandedExtensionGroups(
   text: string | undefined,
   localExtensionNames: Set<string>,
+  resolveVersion?: PackageVersionResolver,
 ): ExtensionGroups | undefined {
   if (!text || getSectionHeading(text) !== "Extensions") return undefined;
 
@@ -321,16 +367,21 @@ function parseExpandedExtensionGroups(
   const sourceExtensions: string[] = [];
   let foundItem = false;
   let currentPackageSource: string | undefined;
-  let currentPackagePaths: string[] = [];
+  let scope: "user" | "project" | undefined;
   const flushPackage = () => {
     if (!currentPackageSource) return;
-    packageExtensions.push(formatPackageExtensionLabel(currentPackageSource));
+    packageExtensions.push(formatPackageExtensionLabel(currentPackageSource, resolveVersion, scope));
     currentPackageSource = undefined;
-    currentPackagePaths = [];
   };
 
   for (const rawLine of text.split("\n").slice(1)) {
     const line = stripAnsi(rawLine).replace(/\s+$/, "");
+    const scopeLabel = line.match(/^ {2}(user|project|path)$/)?.[1];
+    if (scopeLabel) {
+      flushPackage();
+      scope = scopeLabel === "path" ? undefined : scopeLabel as "user" | "project";
+      continue;
+    }
     const packageSource = line.match(/^ {4}((?:npm|git):.+)$/)?.[1];
     if (packageSource) {
       flushPackage();
@@ -340,10 +391,7 @@ function parseExpandedExtensionGroups(
     }
 
     const packagePath = line.match(/^ {6}(\S.*)$/)?.[1];
-    if (packagePath && currentPackageSource) {
-      currentPackagePaths.push(packagePath);
-      continue;
-    }
+    if (packagePath && currentPackageSource) continue;
 
     flushPackage();
     const path = line.match(/^ {4}(\S.*)$/)?.[1];
@@ -376,6 +424,7 @@ function parseExpandedExtensionGroups(
 function classifyCompactExtensionLabels(
   labels: string[],
   localExtensionNames: Set<string>,
+  resolveVersion?: PackageVersionResolver,
 ): ExtensionGroups {
   const localExtensions: string[] = [];
   const packageExtensions: string[] = [];
@@ -392,13 +441,14 @@ function classifyCompactExtensionLabels(
     ) {
       localExtensions.push(name);
     } else if (isPackageSource(label) || name.startsWith("@")) {
-      packageExtensions.push(
-        isPackageSource(label) ? normalizePackageSource(label) : name,
-      );
+      packageExtensions.push(formatPackageExtensionLabel(
+        isPackageSource(label) ? label : `npm:${name}`,
+        resolveVersion,
+      ));
     } else if (isExplicitSourcePath(label)) {
       sourceExtensions.push(name);
     } else {
-      packageExtensions.push(name);
+      packageExtensions.push(formatPackageExtensionLabel(`npm:${name}`, resolveVersion));
     }
   }
 
@@ -439,6 +489,7 @@ export function parseWelcomeResources(
   text: string,
   localExtensionNames = getLocalExtensionNames(),
   expandedExtensionsText?: string,
+  resolveVersion?: PackageVersionResolver,
 ): WelcomeResources {
   const bodies = new Map<WelcomeSection, string[]>();
   let currentSection: WelcomeSection | undefined;
@@ -463,8 +514,8 @@ export function parseWelcomeResources(
   const themes = unique(splitList(bodies.get("Themes") ?? []));
   const extensionLabels = unique(splitList(bodies.get("Extensions") ?? []));
   const groups =
-    parseExpandedExtensionGroups(expandedExtensionsText, localExtensionNames) ??
-    classifyCompactExtensionLabels(extensionLabels, localExtensionNames);
+    parseExpandedExtensionGroups(expandedExtensionsText, localExtensionNames, resolveVersion) ??
+    classifyCompactExtensionLabels(extensionLabels, localExtensionNames, resolveVersion);
   const extensions = [
     ...groups.localExtensions,
     ...groups.packageExtensions,
@@ -482,20 +533,39 @@ export function parseWelcomeResources(
   };
 }
 
+function findResourceParent(component: unknown): ResourcePanel | undefined {
+  if (!isResourcePanel(component)) return undefined;
+  const [header, panel] = component.children;
+  if (
+    isResourcePanel(header) && isResourcePanel(panel) &&
+    header.children.some((child) => {
+      const expandable = child as CollapsedTextComponent;
+      return child instanceof WelcomeHeader ||
+        typeof expandable.getCollapsedText === "function" ||
+        (typeof expandable.setExpanded === "function" &&
+          typeof expandable.state?.expanded === "boolean");
+    })
+  ) return component;
+
+  // Newer Pi versions keep header/resources/chat inside a document container.
+  for (const child of component.children) {
+    const parent = findResourceParent(child);
+    if (parent) return parent;
+  }
+  return undefined;
+}
+
 function takeResourcePanel(tui: TUI): ResourceBridge | undefined {
   const host = tui as BridgeTui;
   if (host[RESOURCE_BRIDGE_KEY]) return undefined;
 
-  // 桥接核心 loaded-resources 面板：它紧跟在 header 之后（下标 1）。
-  // 整体形状检查失败时保持核心面板原样，而不是移动无关组件。
-  if (tui.children.length < 8 || !isResourcePanel(tui.children[0])) {
-    return undefined;
-  }
-  const panel = tui.children[RESOURCE_PANEL_INDEX];
+  const parent = findResourceParent(tui);
+  if (!parent) return undefined;
+  const panel = parent.children[RESOURCE_PANEL_INDEX];
   if (!isResourcePanel(panel)) return undefined;
 
-  const bridge = { panel, originalIndex: RESOURCE_PANEL_INDEX };
-  tui.removeChild(panel);
+  const bridge = { panel, parent, originalIndex: RESOURCE_PANEL_INDEX };
+  parent.children.splice(RESOURCE_PANEL_INDEX, 1);
   host[RESOURCE_BRIDGE_KEY] = bridge;
   return bridge;
 }
@@ -506,9 +576,9 @@ function restoreResourcePanel(
 ): void {
   if (!bridge) return;
 
-  if (!tui.children.includes(bridge.panel)) {
-    const index = Math.min(bridge.originalIndex, tui.children.length);
-    tui.children.splice(index, 0, bridge.panel);
+  if (!bridge.parent.children.includes(bridge.panel)) {
+    const index = Math.min(bridge.originalIndex, bridge.parent.children.length);
+    bridge.parent.children.splice(index, 0, bridge.panel);
   }
   delete (tui as BridgeTui)[RESOURCE_BRIDGE_KEY];
 }
@@ -539,17 +609,40 @@ function wrapPrefixed(prefix: string, text: string, width: number): string[] {
   );
 }
 
+function formatResourceItem(item: string, theme: Theme, nameWidth = 0): string {
+  const versioned = item.match(/^(.*?) {2}(v\S+(?: .*)?)$/);
+  if (!versioned) return theme.fg("text", item);
+  const [, name, version] = versioned;
+  const padding = " ".repeat(Math.max(2, nameWidth - visibleWidth(name) + 2));
+  return `${theme.fg("text", name)}${padding}${theme.fg("dim", version)}`;
+}
+
+function versionedNameWidth(items: string[]): number {
+  return items.reduce((width, item) => {
+    const name = item.match(/^(.*?) {2}v\S/)?.[1];
+    return name ? Math.max(width, visibleWidth(name)) : width;
+  }, 0);
+}
+
+function sectionHeading(title: WelcomeSection, count: number, theme: Theme): string {
+  return `${theme.fg("mdHeading", `[${title}]`)}${theme.fg("dim", ` ${count}`)}`;
+}
+
 function appendSingleColumnRows(
   lines: string[],
   items: string[],
   theme: Theme,
   columnWidth: number,
 ): void {
+  const nameWidth = versionedNameWidth(items);
   for (const item of items) {
+    const aligned = formatResourceItem(item, theme, nameWidth);
     lines.push(
       ...wrapPrefixed(
         theme.fg("dim", "  • "),
-        theme.fg("dim", item),
+        visibleWidth(aligned) <= columnWidth - 4
+          ? aligned
+          : formatResourceItem(item, theme),
         columnWidth,
       ),
     );
@@ -610,72 +703,51 @@ function appendColumnRows(
   theme: Theme,
   columnWidth: number,
   sharedColumnCount?: 2 | 3,
-  minCellWidth = MIN_LIST_COLUMN_WIDTH,
 ): void {
   const listWidth = Math.max(1, columnWidth - 2);
   const desiredColumns = Math.ceil(items.length / MAX_LIST_ROWS_PER_COLUMN);
   const fittingColumns = Math.max(
     1,
-    Math.floor((listWidth + LIST_COLUMN_GAP) / (minCellWidth + LIST_COLUMN_GAP)),
+    Math.floor((listWidth + LIST_COLUMN_GAP) / (MIN_LIST_COLUMN_WIDTH + LIST_COLUMN_GAP)),
   );
   const requestedColumns =
     sharedColumnCount && items.length > MAX_LIST_ROWS_PER_COLUMN
       ? sharedColumnCount
       : desiredColumns;
-  const columnCount = Math.min(requestedColumns, fittingColumns);
+  let columnCount = Math.min(requestedColumns, fittingColumns);
+  // Prefer fewer columns to losing a skill name or an extension's version.
+  while (columnCount > 1) {
+    const rowCount = Math.ceil(items.length / columnCount);
+    const widths = getColumnWidths(listWidth, columnCount);
+    if (items.every((item, index) =>
+      visibleWidth(`• ${item}`) <= (widths[Math.floor(index / rowCount)] ?? 0),
+    )) break;
+    columnCount -= 1;
+  }
 
-  if (columnCount === 1) {
+  if (columnCount <= 1) {
     appendSingleColumnRows(lines, items, theme, columnWidth);
     return;
   }
 
   const rowsPerColumn = Math.ceil(items.length / columnCount);
   const cellWidths = getColumnWidths(listWidth, columnCount);
+  const nameWidths = cellWidths.map((_, column) =>
+    versionedNameWidth(items.slice(column * rowsPerColumn, (column + 1) * rowsPerColumn)),
+  );
 
   for (let row = 0; row < rowsPerColumn; row += 1) {
     const cells = cellWidths.map((cellWidth, column) => {
       const item = items[column * rowsPerColumn + row];
       if (!item) return " ".repeat(cellWidth);
-
-      // truncateToWidth inserts ANSI resets around its ellipsis. Strip those
-      // because the complete row receives its muted color afterward; otherwise
-      // one truncated cell resets the color of every following column.
-      const cell = stripAnsi(truncateToWidth(`• ${item}`, cellWidth, "…"));
+      const aligned = formatResourceItem(item, theme, nameWidths[column]);
+      const label = visibleWidth(aligned) <= cellWidth - 2
+        ? aligned : formatResourceItem(item, theme);
+      const cell = `${theme.fg("dim", "• ")}${label}`;
       return cell + " ".repeat(Math.max(0, cellWidth - visibleWidth(cell)));
     });
-    const rowText = `  ${cells.join(" ".repeat(LIST_COLUMN_GAP))}`.trimEnd();
-    lines.push(theme.fg("dim", rowText));
+    lines.push(`  ${cells.join(" ".repeat(LIST_COLUMN_GAP))}`.trimEnd());
   }
-}
-
-// 按内容宽度自适应多列的最小列宽：在保证不截断的前提下压缩列宽、增加列数。
-// 下限 MIN_LIST_COLUMN_WIDTH，上限 60（防止列宽过大反而浪费空间）。
-// 若按不截断宽度只能排 1 列、而列表较长（多列可显著减少行数），则收紧列宽
-// 换取 2 列——个别超长项由 appendColumnRows 以省略号截断。
-function getFitToContentMinCellWidth(
-  items: string[],
-  columnWidth: number,
-): number {
-  const maxItemVisibleWidth = items.reduce(
-    (max, item) => Math.max(max, visibleWidth(`• ${item}`)),
-    0,
-  );
-  const fitWidth = Math.min(
-    60,
-    Math.max(MIN_LIST_COLUMN_WIDTH, maxItemVisibleWidth + 4),
-  );
-  const listWidth = Math.max(1, columnWidth - 2);
-  const fittingColumns = Math.max(
-    1,
-    Math.floor((listWidth + LIST_COLUMN_GAP) / (fitWidth + LIST_COLUMN_GAP)),
-  );
-  if (fittingColumns === 1 && items.length > MAX_LIST_ROWS_PER_COLUMN) {
-    return Math.max(
-      MIN_LIST_COLUMN_WIDTH,
-      Math.floor((listWidth + LIST_COLUMN_GAP) / 2) - LIST_COLUMN_GAP,
-    );
-  }
-  return fitWidth;
 }
 
 function appendSection(
@@ -688,7 +760,7 @@ function appendSection(
   sharedColumnCount?: 2 | 3,
 ): void {
   if (lines.length > 0) lines.push("");
-  lines.push(theme.fg("mdHeading", `[${title}]`));
+  lines.push(sectionHeading(title, body.length, theme));
 
   if (body.length === 0) {
     lines.push(theme.fg("dim", "  (none)"));
@@ -709,7 +781,7 @@ function appendExtensionsSection(
   sharedColumnCount: 2 | 3,
 ): void {
   if (lines.length > 0) lines.push("");
-  lines.push(theme.fg("mdHeading", "[Extensions]"));
+  lines.push(sectionHeading("Extensions", extensions.length, theme));
 
   if (extensions.length === 0) {
     lines.push(theme.fg("dim", "  (none)"));
@@ -734,7 +806,6 @@ function appendExtensionsSection(
     title: string;
     items: string[];
     multiColumn: boolean;
-    fitToContent?: boolean;
   };
   const groups: ExtensionGroup[] = [
     { title: "Local", items: localExtensions, multiColumn: true },
@@ -742,7 +813,6 @@ function appendExtensionsSection(
       title: "Packages",
       items: installedPackageExtensions,
       multiColumn: true,
-      fitToContent: true,
     },
     {
       title: "Source paths",
@@ -753,17 +823,16 @@ function appendExtensionsSection(
 
   for (const [index, group] of groups.entries()) {
     if (index > 0) lines.push("");
-    lines.push(theme.fg("muted", `  ${group.title}`));
+    if (groups.length > 1) {
+      lines.push(theme.fg("muted", `  ${group.title} · ${group.items.length}`));
+    }
     if (group.multiColumn) {
       appendColumnRows(
         lines,
         group.items,
         theme,
         columnWidth,
-        group.fitToContent ? undefined : sharedColumnCount,
-        group.fitToContent
-          ? getFitToContentMinCellWidth(group.items, columnWidth)
-          : undefined,
+        sharedColumnCount,
       );
     } else {
       appendSingleColumnRows(lines, group.items, theme, columnWidth);
@@ -830,6 +899,7 @@ function appendInlineSections(
   theme: Theme,
   columnWidth: number,
 ): void {
+  if (sections.length === 0) return;
   const gap = LIST_COLUMN_GAP;
   const cellWidth = Math.max(
     1,
@@ -848,7 +918,7 @@ function appendInlineSections(
     if (lines.length > 0) lines.push("");
 
     const columns = batch.map(({ title, body }) => {
-      const column: string[] = [theme.fg("mdHeading", `[${title}]`)];
+      const column: string[] = [sectionHeading(title, body.length, theme)];
       if (body.length === 0) {
         column.push(theme.fg("dim", "  (none)"));
       } else {
@@ -901,10 +971,10 @@ function renderResourceColumn(
   appendInlineSections(
     lines,
     [
-      { title: "Context", body: resources.context },
-      { title: "Prompts", body: resources.prompts },
-      { title: "Themes", body: resources.themes },
-    ],
+      { title: "Context" as const, body: resources.context },
+      { title: "Prompts" as const, body: resources.prompts },
+      { title: "Themes" as const, body: resources.themes },
+    ].filter(({ body }) => body.length > 0),
     theme,
     columnWidth,
   );
@@ -1025,6 +1095,7 @@ class WelcomeHeader implements Component {
     private readonly tui: TUI,
     private readonly theme: Theme,
     private readonly bridge: ResourceBridge | undefined,
+    private readonly resolveVersion: PackageVersionResolver,
     forceInitialRender: boolean,
   ) {
     // session_start 在核心填充 loaded-resources 面板之前触发，稍后再捕获。
@@ -1063,6 +1134,7 @@ class WelcomeHeader implements Component {
           resourceText,
           getLocalExtensionNames(),
           expandedExtensionsText,
+          this.resolveVersion,
         )
       : undefined;
     // 完整性检查：扩展列表必须包含 pi-ui 自身，防止抓到半填充的快照。
@@ -1146,6 +1218,7 @@ export function installWelcomeHeader(
           tui,
           theme,
           takeResourcePanel(tui),
+          createPackageVersionResolver(ctx.cwd),
           reason === "startup",
         ),
     );
