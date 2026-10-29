@@ -97,7 +97,7 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
     const gap = user ? 0 : 1;
     const prefix = " ".repeat(x);
     const color = user ? "thinkingHigh" : "success";
-    const header = cardEdge(lane, "╭", "╮", theme.fg(color, theme.bold(user ? "You" : "Assistant")), theme, color);
+    const header = cardEdge(lane, "╭", "╮", theme.fg(color, theme.bold(user ? "You" : "Assistant")), theme, color, user ? "right" : "left");
     const body = rows.slice(start, end).map((line) => cardRail(line, lane, theme, color));
     const footer = cardEdge(lane, "╰", "╯", theme.fg("dim", time), theme, color, user ? "right" : "left");
     layout = { x: x + 2, y: gap + 1, width: innerWidth, height: native.length, start, count: end - start };

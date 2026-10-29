@@ -117,10 +117,10 @@ The default message editor is replaced with a **BoxedEditor** that uses Unicode 
 
 ### Message Cards
 
-User messages occupy the right half of the transcript, and assistant replies occupy the left half. Both use rounded frames and reserve the scrollbar column. User frames and titles use the theme's purple `thinkingHigh` color, assistant frames and titles use its green `success` color, and tool cards use `borderAccent`. Long text wraps within its half of the screen.
+User messages occupy the right half of the transcript, with “You” in the top-right corner, and assistant replies occupy the left half. Both use rounded frames and reserve the scrollbar column. User frames and titles use the theme's purple `thinkingHigh` color, assistant frames and titles use its green `success` color, and tool cards use `borderAccent`. Long text wraps within its half of the screen.
 
 ```text
-                                        ╭─ You ───────────────────────────────╮
+                                        ╭─────────────────────────────── You ─╮
                                         │ Please check the build.             │
                                         ╰────────────────────────── 12:34:56 ─╯
 

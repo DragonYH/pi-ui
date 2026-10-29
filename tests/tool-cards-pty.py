@@ -67,7 +67,7 @@ export default function() {}
         clock = time.strftime('%H:%M:%S', time.localtime(timestamp / 1000))
 
         def message_cards_visible(text):
-            return (re.search(r'╭─ You ─+╮', text)
+            return (re.search(r'╭─+ You ─╮', text)
                     and re.search(r'╭─ Assistant ─+╮', text)
                     and re.search(rf'╰─+ {clock} ─╯', text)
                     and re.search(rf'╰─ {clock} ─+╯', text))
@@ -154,7 +154,7 @@ export default function() {}
             for index, snapshot in enumerate(snapshots, 1):
                 chat = plain(snapshot['chat'].encode())
                 assert message_cards_visible(chat), f'{mode}: history cards lost after reload {index}; inspect .pi/tool-cards-{mode}-reloads.json'
-                assert chat.count('╭─ You ') == 1 and chat.count('╭─ Assistant ') == 1, f'{mode}: reload {index} nested message frames'
+                assert len(re.findall(r'╭─+ You ─╮', chat)) == 1 and chat.count('╭─ Assistant ') == 1, f'{mode}: reload {index} nested message frames'
                 assert 'Tool card display' in chat
                 assert 'Message card reply' in chat
                 assert 'done' in chat and re.search(r'ctrl\+o +expand', chat), f'{mode}: tool card lost after reload {index}'

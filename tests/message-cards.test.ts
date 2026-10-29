@@ -24,7 +24,7 @@ function assertLane(lines: string[], width: number, user: boolean) {
   assert(frame.length >= 3);
   assert(frame.every((line) => line.indexOf(line.trimStart()) === x), "card must remain in its assigned half");
   assert(frame.every((line) => visibleWidth(line) === x + lane), "right edge reserves the scrollbar column");
-  assert(frame[0].slice(x).startsWith("╭─ "));
+  assert.match(frame[0].slice(x), user ? /^╭─+ You ─╮$/ : /^╭─ Assistant ─+╮$/);
   assert(frame.at(-1)!.endsWith("─╯"));
   return frame;
 }

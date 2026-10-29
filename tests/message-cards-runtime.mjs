@@ -49,7 +49,7 @@ function check(component, width, user, time = "12:34:56") {
   const plain = rendered.map(stripVTControlCharacters).filter((line) => line.trim());
   const lane = Math.floor((width - 1) / 2);
   const offset = user ? width - 1 - lane : 0;
-  assert(plain[0].trimStart().startsWith("╭─ "));
+  assert.match(plain[0].trimStart(), user ? /^╭─+ You ─╮$/ : /^╭─ Assistant ─+╮$/);
   assert(plain.every((line) => visibleWidth(line) === offset + lane));
   assert(plain.every((line) => line.length - line.trimStart().length === offset));
   assert(plain.at(-1).includes(time));
