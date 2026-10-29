@@ -1,6 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { AssistantMessageComponent, UserMessageComponent, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { cardEdge, cardRail } from "./card-frame.ts";
 
 // A new generation also installs the fix over hooks retained by a running Pi.
@@ -62,19 +62,19 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
     component.setOutputPad = function() { setOutputPad.call(this, 0); };
     component.setOutputPad(0);
   }
-  let layout: { x: number; y: number; width: number; height: number; start: number; count: number } | undefined;
+  let layout: { x: number; y: number; width: number; nativeWidth: number; height: number; start: number; count: number } | undefined;
   let lastTimestamp: number | undefined;
   let time = "—";
   component.render = function(width) {
     layout = undefined;
     const available = Math.max(0, Math.floor(width) - 1);
-    const lane = Math.floor(available / 2);
-    if (!lane) return [];
-    const x = user ? available - lane : 0;
+    const maxWidth = Math.floor(available * 2 / 3);
+    if (!maxWidth) return [];
     // The outer frame owns padding and background. Native rebuilds can replace Markdown.
     if (user) for (const child of this.children ?? []) prepareUserContent(child);
-    const innerWidth = Math.max(1, lane - 4);
-    const native = nativeRender.call(this, innerWidth);
+    // Wrap once at the cap; every visible row will also fit the measured frame.
+    const nativeWidth = Math.max(1, maxWidth - 4);
+    const native = nativeRender.call(this, nativeWidth);
     let zoneStart = "";
     let zoneEnd = "";
     const rows = native.map((line) => line.replace(ZONE, (escape: string, kind: string) => {
@@ -94,18 +94,25 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
       lastTimestamp = timestamp;
       time = clock(timestamp);
     }
+    const title = user ? "You" : "Assistant";
+    const content = rows.slice(start, end);
+    const longest = content.reduce((length, line) => Math.max(length, visibleWidth(stripVTControlCharacters(line).trimEnd())), 0);
+    const cardWidth = Math.min(maxWidth, Math.max(longest + 4, visibleWidth(title) + 6, visibleWidth(time) + 6));
+    const innerWidth = Math.max(1, cardWidth - 4);
+    const x = user ? available - cardWidth : 0;
     const gap = user ? 0 : 1;
     const prefix = " ".repeat(x);
     const color = user ? "thinkingHigh" : "success";
-    const header = cardEdge(lane, "╭", "╮", theme.fg(color, theme.bold(user ? "You" : "Assistant")), theme, color, user ? "right" : "left");
-    const body = rows.slice(start, end).map((line) => cardRail(line, lane, theme, color));
-    const footer = cardEdge(lane, "╰", "╯", theme.fg("dim", time), theme, color, user ? "right" : "left");
-    layout = { x: x + 2, y: gap + 1, width: innerWidth, height: native.length, start, count: end - start };
+    const header = cardEdge(cardWidth, "╭", "╮", theme.fg(color, theme.bold(title)), theme, color, user ? "right" : "left");
+    // Remove native line padding without introducing an ellipsis into short content.
+    const body = content.map((line) => cardRail(truncateToWidth(line, innerWidth, ""), cardWidth, theme, color));
+    const footer = cardEdge(cardWidth, "╰", "╯", theme.fg("dim", time), theme, color, user ? "right" : "left");
+    layout = { x: x + 2, y: gap + 1, width: innerWidth, nativeWidth, height: native.length, start, count: end - start };
     return [...(gap ? [""] : []), zoneStart + prefix + header, ...body.map((line) => prefix + line), zoneEnd + prefix + footer];
   };
   if (nativeMouse) component.handleMouse = function(event) {
     if (!layout || event.x < layout.x || event.x >= layout.x + layout.width || event.y < layout.y || event.y >= layout.y + layout.count) return undefined;
-    return nativeMouse.call(this, { ...event, x: event.x - layout.x, y: event.y - layout.y + layout.start, width: layout.width, height: layout.height });
+    return nativeMouse.call(this, { ...event, x: event.x - layout.x, y: event.y - layout.y + layout.start, width: layout.nativeWidth, height: layout.height });
   };
 }
 

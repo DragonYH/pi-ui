@@ -158,7 +158,7 @@ export default function() {}
                 assert 'Tool card display' in chat
                 assert 'Message card reply' in chat
                 assert 'done' in chat and re.search(r'ctrl\+o +expand', chat), f'{mode}: tool card lost after reload {index}'
-            print(json.dumps({'mode': mode, 'columns': columns, 'checks': ['resumed half-width user/assistant cards', 'recorded corner timestamps', 'resumed tool call', 'recorded duration', 'Ctrl+O expand', 'Ctrl+O collapse', 'stale-context redraws and completed history snapshots after two /reload commands']}), flush=True)
+            print(json.dumps({'mode': mode, 'columns': columns, 'checks': ['resumed adaptive user/assistant cards', 'recorded corner timestamps', 'resumed tool call', 'recorded duration', 'Ctrl+O expand', 'Ctrl+O collapse', 'stale-context redraws and completed history snapshots after two /reload commands']}), flush=True)
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)

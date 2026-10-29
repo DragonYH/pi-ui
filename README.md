@@ -39,7 +39,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 - ⏳ **Adaptive Working Indicator** — Animated spinner (󰪞→󰪥) at 120ms with **3-tone adaptive coloring** (green→yellow→red based on token recency). Shows cumulative output tokens and elapsed time for the current task (`Working... (↓ 1.2k tokens · 12s)`), including thinking and tool-call arguments.
 - 📊 **Per-Message Usage Stats** — After each assistant reply, a **token/cost/duration summary** is displayed inline (`↑271 ↓50 · $0.0017 · 󰅐 4.1s`) with a matching-width separator line. Stats are displayed only — **automatically stripped from LLM context** to avoid polluting the conversation.
 - 🧰 **Compact Tool Cards** — Rounded frames with execution state, recorded duration, and a four-row result preview. Shell output keeps its latest lines; successful file reads collapse to a hidden-line hint. Expand with your configured tool shortcut or a click; native diffs and extension tools share the same frame (Pi 1.4+).
-- 💬 **Message Cards** — User messages occupy the right half and assistant replies the left, with rounded frames matching tool cards. Recorded local times appear at the user's bottom right and the assistant's bottom left; native Markdown, streaming and thinking controls are retained.
+- 💬 **Message Cards** — User messages align right and assistant replies align left, with rounded frames that fit the longest displayed line up to two thirds of the available width. Recorded local times appear at the user's bottom right and the assistant's bottom left; native Markdown, streaming and thinking controls are retained.
 - 🔌 **Zero Dependencies** — Pure peer-dependency package; no additional npm packages required
 - ⚡ **TypeScript Native** — Source code loaded directly via [jiti](https://github.com/unjs/jiti) — no build step needed
 - 🧩 **Modular Architecture** — Focused modules cover the entry point, UI setup, footer, editor, welcome layout, installed package versions, update notices, and startup progress.
@@ -117,16 +117,16 @@ The default message editor is replaced with a **BoxedEditor** that uses Unicode 
 
 ### Message Cards
 
-User messages occupy the right half of the transcript, with “You” in the top-right corner, and assistant replies occupy the left half. Both use rounded frames and reserve the scrollbar column. User frames and titles use the theme's purple `thinkingHigh` color, assistant frames and titles use its green `success` color, and tool cards use `borderAccent`. Long text wraps within its half of the screen.
+User messages align right, with “You” in the top-right corner, and assistant replies align left. Rounded frames adapt to the longest displayed line, including borders and padding, up to two thirds of the transcript's available width after reserving the scrollbar column. Short messages keep only the space needed for their content, title and timestamp; longer text wraps at the limit. Widths use terminal display columns, so Chinese characters, emoji and styled Markdown size correctly. User frames and titles use the theme's purple `thinkingHigh` color, assistant frames and titles use its green `success` color, and tool cards use `borderAccent`.
 
 ```text
-                                        ╭─────────────────────────────── You ─╮
-                                        │ Please check the build.             │
-                                        ╰────────────────────────── 12:34:56 ─╯
+                                                    ╭─────────────────── You ─╮
+                                                    │ Please check the build. │
+                                                    ╰────────────── 12:34:56 ─╯
 
-╭─ Assistant ─────────────────────────╮
-│ The build passed.                   │
-╰─ 12:34:58 ──────────────────────────╯
+╭─ Assistant ────────╮
+│  The build passed. │
+╰─ 12:34:58 ─────────╯
 ```
 
 Times use `HH:mm:ss` in the local timezone from the original message timestamp, so restoring or reloading a conversation keeps them stable. Assistant cards update during streaming and retain native Markdown, code highlighting, links, thinking controls and error messages. Tool-call-only assistant messages do not add empty cards.

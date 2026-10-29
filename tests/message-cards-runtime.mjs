@@ -44,13 +44,15 @@ function host(extensions = loaded.extensions) {
     updatePendingMessagesDisplay() {}, hideThinkingBlock: false,
   });
 }
-function check(component, width, user, time = "12:34:56") {
+function check(component, width, user, time = "12:34:56", expectedWidth) {
   const rendered = component.render(width);
   const plain = rendered.map(stripVTControlCharacters).filter((line) => line.trim());
-  const lane = Math.floor((width - 1) / 2);
-  const offset = user ? width - 1 - lane : 0;
+  const cardWidth = visibleWidth(plain[0].trimStart());
+  const offset = user ? width - 1 - cardWidth : 0;
+  assert(cardWidth <= Math.floor((width - 1) * 2 / 3));
+  if (expectedWidth !== undefined) assert.equal(cardWidth, expectedWidth);
   assert.match(plain[0].trimStart(), user ? /^╭─+ You ─╮$/ : /^╭─ Assistant ─+╮$/);
-  assert(plain.every((line) => visibleWidth(line) === offset + lane));
+  assert(plain.every((line) => visibleWidth(line) === offset + cardWidth));
   assert(plain.every((line) => line.length - line.trimStart().length === offset));
   assert(plain.at(-1).includes(time));
   if (user) assert(plain.at(-1).endsWith(` ${time} ─╯`));
@@ -72,7 +74,15 @@ for (const name of ["dark", "light", "catppuccin-dark"]) {
     check(user, width, true);
     check(reply, width, false);
   }
-  capture.push(name, ...user.render(100), ...reply.render(100), "");
+  const compact = host();
+  compact.addMessageToChat({ role: "user", content: "OK", timestamp });
+  compact.addMessageToChat(assistant([{ type: "text", text: "OK" }]));
+  const shortCards = compact.chatContainer.children.filter((component) => component instanceof UserMessageComponent || component instanceof AssistantMessageComponent);
+  for (const width of [32, 52, 100, 160]) {
+    check(shortCards[0], width, true, "12:34:56", 14);
+    check(shortCards[1], width, false, "12:34:56", 15);
+  }
+  capture.push(name, ...shortCards[0].render(100), ...shortCards[1].render(100), ...user.render(100), ...reply.render(100), "");
   // Click the native thinking MouseRegion after translating the frame's padding and spacer.
   const before = stripVTControlCharacters(reply.render(100).join("\n"));
   const click = dispatchMouseEvent(reply, { type: "click", button: "left", x: 2, y: 2, screenX: 2, screenY: 2, width: 100, height: reply.render(100).length, shift: false, alt: false, ctrl: false });
@@ -141,5 +151,5 @@ for (let reload = 0; reload < 2; reload++) {
 }
 mkdirSync(resolve(repo, ".pi"), { recursive: true });
 writeFileSync(resolve(repo, ".pi/message-cards-preview.ansi"), capture.join("\n"));
-console.log("Installed Pi: left/right half-width cards, recorded corner timestamps, three themes, seven widths, native thinking clicks, streaming/final updates, output padding, unowned sessions, stale-context redraws and reload passed.");
+console.log("Installed Pi: adaptive left/right cards capped at two thirds, compact messages, recorded corner timestamps, three themes, seven widths, native thinking clicks, streaming/final updates, output padding, unowned sessions, stale-context redraws and reload passed.");
 console.log("Preview: .pi/message-cards-preview.ansi");
