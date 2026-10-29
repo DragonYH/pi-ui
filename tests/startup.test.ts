@@ -58,7 +58,7 @@ test("native Pi's first frame shows progress and pi-ui initializes before an ear
   });
   try {
     await setup.host.init();
-    assert(setup.firstFrame().includes("●"), "native ui.start must already have the animated logo");
+    assert(setup.firstFrame().includes("━"), "native ui.start must already have the animated logo");
     assert(!setup.firstFrame().includes("Pi can explain"));
     assert.deepEqual(order, ["ui", "slow-1", "slow-2"]);
     assert.equal(slow.handlers.get("session_start"), slowHandlers, "registered handlers remain untouched");
@@ -121,13 +121,21 @@ test("startup layout fits narrow and wide terminals and preserves full extension
     active: true, phase: "initializing" as const, startedAt: 0, elapsedMs: 222, total: 2, frame: 2,
     entries: [{ path: "/extension.ts", name: longName, state: "ready" as const, startedAt: 0, initializeMs: 12 }],
   };
-  for (const width of [1, 8, 17, 18, 40, 75, 76, 100, 160]) {
-    const lines = renderStartupProgress(snapshot, width, undefined, 100);
-    assert(lines.every((line) => visibleWidth(line) <= width), `layout exceeded ${width} columns`);
+  for (const width of [1, 8, 11, 17, 18, 40, 75, 76, 100, 160, 240]) {
+    for (const height of [1, 6, 10, 12, 16, 30, 100]) {
+      const lines = renderStartupProgress(snapshot, width, undefined, height);
+      assert(lines.every((line) => visibleWidth(line) <= width), `layout exceeded ${width} columns`);
+      assert(lines.length <= height, `layout exceeded ${height} rows at width ${width}`);
+    }
   }
-  assert(renderStartupProgress(snapshot, 100).join("\n").includes("●"));
-  assert(renderStartupProgress(snapshot, 160).join("\n").includes(longName));
-  assert(!renderStartupProgress({ ...snapshot, active: false }, 100).join("\n").includes("●"));
+  const wide = renderStartupProgress(snapshot, 160);
+  assert(wide.join("\n").includes("━"));
+  assert(wide.join("\n").includes(longName));
+  assert.deepEqual(wide.slice(0, 2), ["", ""], "the header has breathing room above it");
+  assert(wide.filter((line) => line.trim()).every((line) => line.startsWith(" ".repeat(20))), "the panel stays centered at its maximum width");
+  assert(!wide.join("\n").includes("╭"), "the wordmark has no surrounding box");
+  assert.notDeepEqual(wide, renderStartupProgress({ ...snapshot, frame: 10 }, 160), "the sweep advances between frames");
+  assert(!renderStartupProgress({ ...snapshot, active: false }, 100).join("\n").includes("━"));
   const poisoned = { ...snapshot, entries: [{ ...snapshot.entries[0], name: "bad\x1b[2Jname\n" }] };
   assert(!renderStartupProgress(poisoned, 100).join("\n").includes("\x1b"));
 });

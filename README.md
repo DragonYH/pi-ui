@@ -32,7 +32,7 @@ pi-ui is a **pi-package** extension for the [pi coding agent](https://github.com
 
 - 🖥️ **Custom Status Bar** — Real-time footer display showing model name, thinking level, current working directory, git branch, context usage (%), token usage (↑input ↓output), and API cost — all in one glance
 - 📚 **Readable Startup Resources** — Skills and extensions show item counts in lists that adapt to terminal width. Package names and installed npm/Git versions are aligned in separate columns; long names wrap when needed. Empty Context, Prompts, and Themes sections are hidden. Skills are listed by name.
-- 🌀 **Native Startup Initialization Progress** — Run `pi` normally: its first screen animates a trail around the PI logo, pi-ui initializes first, and extensions appear progressively with measured session initialization times.
+- 🌀 **Native Startup Initialization Progress** — Run `pi` normally: its first screen shows a gentle sweep beneath the PI logo in a centered layout with breathing room. pi-ui initializes first, and extensions appear progressively with measured session initialization times.
 - 🟢 **Inline Version Updates** — When Pi or an npm extension has a newer release, its version changes to `v1.2.0->v1.2.1`, with the new version highlighted in green. Update checks run in the background; packages without a welcome-screen row use a compact notice.
 - 🎨 **Catppuccin Dark Theme** — A meticulously crafted dark theme based on [Catppuccin Mocha](https://github.com/catppuccin/catppuccin) with 64+ color mappings covering syntax highlighting, markdown rendering, thinking levels, UI components, and export backgrounds
 - ✨ **Boxed Editor** — Unicode border editor (`╭─╮` style) replacing the default editor with elegant rounded corners
@@ -85,8 +85,8 @@ Run `pi` normally after installation. No additional entry point or command alias
 
 - The extension factory adapts the SDK lifecycle in the current process and mounts the animation in Pi's existing UI tree, so the native terminal's first frame already contains the PI animation.
 - Only the `session_start` emission snapshot puts pi-ui first, installing the welcome screen, editor, and footer before other extensions initialize. Other extensions keep their relative order, and other event ordering stays unchanged.
-- The trail moves every 80 ms. Each extension appears when its initialization begins, showing its current state and elapsed time.
-- Timings accumulate all of an extension's `session_start` handlers. Extensions without a handler are identified as such and take 0 ms; earlier module imports and factory registration are excluded.
+- A gentle sweep beneath the PI logo updates every 80 ms, easing back and forth over a 3.2-second cycle. Loading and welcome screens share outer spacing, a content width capped at 120 columns, and a brand column capped at 30 columns. Each extension appears when its initialization begins, showing its current state and elapsed time.
+- Timings accumulate all of an extension's `session_start` handlers. Extensions without a handler take 0 ms; earlier module imports and factory registration are excluded.
 - Startup completion stops the animation and restores the welcome screen without initialization times beside extension names or versions. Errors retain Pi's native reporting and also appear in the progress list.
 - `/reload` and session changes start a fresh timing run, shutdown clears timers, narrow terminals stack the logo and list, and noninteractive modes skip the animation.
 
@@ -217,6 +217,7 @@ pi-ui/
 │   ├── footer.ts             # Footer rendering — model, usage, context, git branch
 │   ├── editor.ts             # BoxedEditor component — Unicode border decoration
 │   ├── welcome.ts            # Startup header — resource counts and adaptive lists
+│   ├── welcome-layout.ts     # Shared loading/welcome margins and column proportions
 │   ├── resource-versions.ts  # Installed package versions from local metadata
 │   ├── update-notices.ts     # Inline Pi/package updates with green target versions
 │   └── startup/              # Native UI lifecycle integration, initialization timings, PI animation

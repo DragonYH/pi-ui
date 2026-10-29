@@ -36,6 +36,7 @@ with tempfile.TemporaryDirectory(prefix='native-startup-', dir=SCRATCH) as tempo
     observer = root / 'observer.ts'
     observer.write_text('''import { appendFileSync } from "node:fs";
 import { InteractiveMode } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 const key = Symbol.for("pi-ui:test:resource-snapshots");
 const prototype = InteractiveMode.prototype;
 if (!prototype[key]) {
@@ -46,6 +47,15 @@ if (!prototype[key]) {
     setTimeout(() => appendFileSync(process.env.PI_UI_TEST_RESOURCES, JSON.stringify({
       nativeAttached: this.documentContainer.children.includes(this.loadedResourcesContainer),
       header: this.customHeader?.render(150).join("\\n").replace(/\\x1b\\[[0-?]*[ -/]*[@-~]/g, ""),
+      layouts: Object.fromEntries([40, 80, 150, 240].map(width => {
+        const lines = this.customHeader?.render(width) ?? [];
+        const plain = lines.map(line => line.replace(/\\x1b\\[[0-?]*[ -/]*[@-~]/g, ""));
+        return [width, {
+          maxWidth: Math.max(0, ...lines.map(visibleWidth)),
+          topPadding: plain.slice(0, 2),
+          leftPadding: Math.min(...plain.filter(line => line.trim()).map(line => line.length - line.trimStart().length)),
+        }];
+      })),
     }) + "\\n"), 200);
     return result;
   };
@@ -128,6 +138,11 @@ export default function(pi) {
                             assert all(f'• {name}' in resources['header'] for name in ['alpha', 'beta']), resources
                             assert re.search(r'\[Extensions\] \d+', resources['header']), resources
                             assert all(name in resources['header'] for name in ['observer', 'slow-plugin']), resources
+                            for width, layout in resources['layouts'].items():
+                                assert layout['maxWidth'] <= int(width), f'{label}: welcome overflow at {width} columns: {layout}'
+                                assert layout['topPadding'] == ['', ''], f'{label}: welcome lost top spacing: {layout}'
+                                margin = max(2, (int(width) - 120) // 2)
+                                assert layout['leftPadding'] >= margin, f'{label}: welcome lost side spacing: {layout}'
                         if commands_sent < len(commands):
                             os.write(master, (commands[commands_sent] + '\r').encode())
                             commands_sent += 1
@@ -153,7 +168,7 @@ export default function(pi) {
             plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', capture.decode(errors='replace'))
             assert '(init ' not in plain, f'{label}: completed initialization timings leaked into the welcome screen'
             assert 'show full startup help' not in plain, f'{label}: native onboarding flashed before pi-ui'
-            assert '●'.encode() in capture, f'{label}: logo animation missing'
+            assert '━'.encode() in capture, f'{label}: logo animation missing'
             assert len({item['frame'] for item in snapshots if item['active']}) >= 4
             if failing:
                 assert any('intentional initialization fixture failure' in entry.get('error', '') for entry in final['entries'])

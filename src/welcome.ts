@@ -22,6 +22,12 @@ import {
 import { PI_LOGO, getStartupProgress } from "./startup/progress.ts";
 import { renderStartupProgress } from "./startup/view.ts";
 import {
+  getWelcomeLayout,
+  GRID_COLUMN_GAP,
+  WELCOME_BOTTOM_PADDING,
+  WELCOME_TOP_PADDING,
+} from "./welcome-layout.ts";
+import {
   formatVersionChange,
   isNewerVersion,
   subscribeToUpdates,
@@ -32,12 +38,7 @@ import {
 // 常量
 // ---------------------------------------------------------------------------
 
-// 双列布局中左侧品牌列（logo 列）的最小宽度，宽屏时按总宽 1/3 放大
-export const BRAND_COLUMN_WIDTH = 14;
-// 品牌列与内容列之间的间距
-export const GRID_COLUMN_GAP = 3;
-// 内容列的最小可用宽度，低于该宽度时降级为单列堆叠
-export const MIN_RESOURCE_COLUMN_WIDTH = 44;
+export { BRAND_COLUMN_WIDTH, GRID_COLUMN_GAP, MIN_RESOURCE_COLUMN_WIDTH } from "./welcome-layout.ts";
 // 窄屏单列布局的最大列宽
 export const MAX_STACKED_COLUMN_WIDTH = 80;
 // 列表自动多列时每列最多行数
@@ -1031,7 +1032,7 @@ function renderContentColumn(
   ];
 }
 
-// 宽屏双列：左侧品牌列（logo + 版本，垂直居中，宽约总宽 1/3），右侧原有欢迎内容
+// 宽屏双列：品牌列限制宽度并垂直居中，给资源列表保留足够空间
 function renderWideWelcome(
   resources: WelcomeResources,
   theme: Theme,
@@ -1057,7 +1058,7 @@ function renderWideWelcome(
   return rows;
 }
 
-// 窄屏单列堆叠：品牌列居中，空行 + 各区段，整体居中（首尾各一个空行）
+// 窄屏单列堆叠：品牌列和资源列居中，外侧留白由 header 统一处理
 function renderNarrowWelcome(
   resources: WelcomeResources | undefined,
   theme: Theme,
@@ -1065,11 +1066,10 @@ function renderNarrowWelcome(
   latestPiVersion?: string,
 ): string[] {
   const columnWidth = Math.min(MAX_STACKED_COLUMN_WIDTH, width);
-  const lines = ["", ...renderBrandColumn(theme, columnWidth, latestPiVersion)];
+  const lines = renderBrandColumn(theme, columnWidth, latestPiVersion);
   if (resources) {
-    lines.push("", ...renderResourceColumn(resources, theme, columnWidth));
+    lines.push("", "", ...renderResourceColumn(resources, theme, columnWidth));
   }
-  lines.push("");
 
   const leftPadding = Math.max(0, Math.floor((width - columnWidth) / 2));
   return lines.map((line) =>
@@ -1086,14 +1086,16 @@ function renderWelcomeHeader(
   latestPiVersion?: string,
 ): string[] {
   if (width <= 0) return [];
-  const brandWidth = Math.max(BRAND_COLUMN_WIDTH, Math.floor(width / 3));
-  if (
-    resources &&
-    width >= brandWidth + GRID_COLUMN_GAP + MIN_RESOURCE_COLUMN_WIDTH
-  ) {
-    return renderWideWelcome(resources, theme, width, brandWidth, latestPiVersion);
-  }
-  return renderNarrowWelcome(resources, theme, width, latestPiVersion);
+  const layout = getWelcomeLayout(width);
+  const lines = resources && layout.wide
+    ? renderWideWelcome(resources, theme, layout.width, layout.brandWidth, latestPiVersion)
+    : renderNarrowWelcome(resources, theme, layout.width, latestPiVersion);
+  const inset = " ".repeat(layout.leftPadding);
+  return [
+    ...Array<string>(WELCOME_TOP_PADDING).fill(""),
+    ...lines.map((line) => line ? `${inset}${line}` : ""),
+    ...Array<string>(WELCOME_BOTTOM_PADDING).fill(""),
+  ];
 }
 
 // ---------------------------------------------------------------------------
