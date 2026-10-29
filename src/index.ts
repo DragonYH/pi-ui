@@ -3,10 +3,12 @@ import { installNativeStartup } from "./startup/native.ts";
 import { registerMessageRenderer, setupCustomUI } from "./ui.ts";
 import { registerWorkingIndicator } from "./working.ts";
 import { registerToolCards } from "./tool-cards.ts";
+import { installMessageCards } from "./message-cards.ts";
 
 export default function (pi: ExtensionAPI) {
   const renderer = registerMessageRenderer(pi);
   installNativeStartup(ExtensionRunner.prototype, InteractiveMode.prototype, renderer);
+  installMessageCards(pi, InteractiveMode.prototype, renderer);
   registerWorkingIndicator(pi);
   registerToolCards(pi);
   pi.on('session_start', async (event, ctx) => {

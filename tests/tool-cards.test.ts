@@ -311,7 +311,7 @@ test("borders use the brighter accent and expansion hints only appear once at th
   }
   assert(colors.includes("borderAccent"));
   assert(!colors.includes("border"));
-  assert(!colors.includes("dim"));
+  assert(colors.includes("dim"), "the shortcut uses the theme's lowest-contrast text color");
 });
 
 test("only the shortcut stays in the footer and hidden output counts stay in the body", () => {

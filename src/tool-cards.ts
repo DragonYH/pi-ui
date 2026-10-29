@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { keyText, type ExtensionAPI, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { cardEdge as edge, cardRail as rail } from "./card-frame.ts";
 
 // Structural types keep loading safe on older Pi versions without the resolver API.
 type Renderers = Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult">;
@@ -83,25 +84,6 @@ function expansionHint(expanded: boolean, width = 0): string {
   const label = keys || "click to";
   const action = expanded ? "fold" : keys ? "expand" : "open";
   return label + " ".repeat(Math.max(1, width - visibleWidth(label) - visibleWidth(action))) + action;
-}
-
-function edge(width: number, left: string, right: string, title: string, theme: Theme, color: "borderAccent" | "error" = FRAME_COLOR, align: "left" | "right" = "left"): string {
-  if (!title) return theme.fg(color, width < 2 ? truncateToWidth(left, width, "") : `${left}${"─".repeat(width - 2)}${right}`);
-  if (width < 6) return truncateToWidth(title, width, "");
-  if (align === "right" && title) {
-    const label = truncateToWidth(title, width - 6);
-    const fill = "─".repeat(Math.max(0, width - 6 - visibleWidth(label)));
-    return theme.fg(color, `${left}─${fill} `) + label + theme.fg(color, ` ─${right}`);
-  }
-  const label = title ? `${truncateToWidth(title, width - 6)} ` : "";
-  return theme.fg(color, `${left}─ `) + label + theme.fg(color, `${"─".repeat(Math.max(0, width - 5 - visibleWidth(label)))}─${right}`);
-}
-
-function rail(line: string, width: number, theme: Theme, isError: boolean): string {
-  if (width < 6) return truncateToWidth(line, width, "");
-  const text = truncateToWidth(line, width - 4);
-  const border = (value: string) => theme.fg(isError ? "error" : FRAME_COLOR, value);
-  return border("│ ") + text + " ".repeat(Math.max(0, width - 4 - visibleWidth(text))) + border(" │");
 }
 
 function callText(line: string, theme: Theme, name = "", command = false): string {
@@ -223,7 +205,7 @@ class CallCard extends CardContent {
     }
     if (!shared.hasResult) {
       if (shared.hiddenCallRows) output.push(rail(theme.fg("muted", `… ${shared.hiddenCallRows}+ lines hidden`), width, theme, context.isError));
-      output.push(edge(width, "╰", "╯", theme.fg("muted", expansionHint(context.expanded, rightWidth)), theme, context.isError ? "error" : FRAME_COLOR, "right"));
+      output.push(edge(width, "╰", "╯", theme.fg("dim", expansionHint(context.expanded, rightWidth)), theme, context.isError ? "error" : FRAME_COLOR, "right"));
     }
     return output;
   }
@@ -322,7 +304,7 @@ class ResultCard extends CardContent {
       output.push(rail(theme.fg("muted", `${this.images} image${this.images === 1 ? "" : "s"}`), width, theme, context.isError));
     }
     const hint = expansionHint(options.expanded, rightColumnWidth(width));
-    output.push(edge(width, "╰", "╯", theme.fg("muted", hint), theme, context.isError ? "error" : FRAME_COLOR, "right"));
+    output.push(edge(width, "╰", "╯", theme.fg("dim", hint), theme, context.isError ? "error" : FRAME_COLOR, "right"));
     return output;
   }
 

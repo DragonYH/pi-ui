@@ -1,4 +1,4 @@
-"""Exercise tool-card expansion and /reload through the native Pi terminal."""
+"""Exercise message/tool cards, expansion and /reload through native Pi terminals."""
 import fcntl
 import json
 import os
@@ -34,6 +34,13 @@ with tempfile.TemporaryDirectory(prefix='tool-cards-', dir=SCRATCH) as temporary
             'themes': [str(REPO / 'themes/catppuccin-dark.json')], 'theme': 'catppuccin-dark',
         }))
         timestamp = int(time.time() * 1000)
+        clock = time.strftime('%H:%M:%S', time.localtime(timestamp / 1000))
+
+        def message_cards_visible(text):
+            return (re.search(r'╭─ You ─+╮', text)
+                    and re.search(r'╭─ Assistant ─+╮', text)
+                    and re.search(rf'╰─+ {clock} ─╯', text)
+                    and re.search(rf'╰─ {clock} ─+╯', text))
         usage = {key: 0 for key in ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']}
         usage['cost'] = {key: 0 for key in ['input', 'output', 'cacheRead', 'cacheWrite', 'total']}
         session = root / f'{mode}.jsonl'
@@ -45,6 +52,8 @@ with tempfile.TemporaryDirectory(prefix='tool-cards-', dir=SCRATCH) as temporary
             {'role': 'toolResult', 'toolCallId': 'fixture-call', 'toolName': 'bash',
              'content': [{'type': 'text', 'text': '\n'.join(f'preview-row-{i:02}' for i in range(25))}],
              'details': {}, 'isError': False, 'durationMs': 1234, 'timestamp': timestamp},
+            {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Message card reply 中文 🧪'}],
+             'api': 'openai-completions', 'provider': 'openai', 'model': 'gpt-4o-mini', 'usage': usage, 'stopReason': 'stop', 'timestamp': timestamp},
         ]
         parent = None
         for i, message in enumerate(messages):
@@ -77,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix='tool-cards-', dir=SCRATCH) as temporary
                 text = plain(capture[phase_start:])
                 expand_hint = re.search(r'ctrl\+o +expand', text)
                 collapse_hint = re.search(r'ctrl\+o +fold', text)
-                if phase == 0 and expand_hint and 'done' in text:
+                if phase == 0 and expand_hint and 'done' in text and message_cards_visible(text):
                     assert '21+ lines hidden' in text
                     assert '25 lines' not in text
                     assert 'preview-row-24' in text
@@ -93,12 +102,12 @@ with tempfile.TemporaryDirectory(prefix='tool-cards-', dir=SCRATCH) as temporary
                     phase = 3
                     phase_start = len(capture)
                     os.write(master, b'/reload\r')
-                elif phase == 3 and expand_hint and 'done' in text:
+                elif phase == 3 and expand_hint and 'done' in text and message_cards_visible(text):
                     phase = 4
                     break
             (SCRATCH / f'tool-cards-{mode}.ansi').write_bytes(capture)
             assert phase == 4, f'{mode}: phase {phase} failed; inspect .pi/tool-cards-{mode}.ansi'
-            print(json.dumps({'mode': mode, 'columns': columns, 'checks': ['resumed tool call', 'recorded duration', 'Ctrl+O expand', 'Ctrl+O collapse', '/reload']}), flush=True)
+            print(json.dumps({'mode': mode, 'columns': columns, 'checks': ['resumed half-width user/assistant cards', 'recorded corner timestamps', 'resumed tool call', 'recorded duration', 'Ctrl+O expand', 'Ctrl+O collapse', '/reload']}), flush=True)
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)

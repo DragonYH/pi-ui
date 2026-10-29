@@ -65,6 +65,8 @@ function assertAlignedColumns(rendered, width, label, time, expanded, keys = "ct
   assert.equal(visibleWidth(footer), width - 1);
   const badge = header.slice(-columns - 3, -3);
   const hint = footer.slice(-columns - 3, -3);
+  const rawFooter = rendered.findLast((line) => line.includes("╯"));
+  assert(rawFooter.includes(themeModule.theme.fg("dim", hint)), "expand and fold controls use the theme's lowest-contrast text color");
   assert.equal(visibleWidth(badge), columns);
   assert.equal(visibleWidth(hint), columns);
   assert.deepEqual(badge.split(" · ").map((field) => field.trim()), [label, time]);
