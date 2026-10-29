@@ -151,7 +151,7 @@ export default function(pi) {
             assert not any(entry['name'] == 'slow-plugin' for entry in snapshots[0]['entries']), 'later extensions must appear progressively'
             assert any(any(entry['state'] == 'initializing' for entry in item['entries']) for item in snapshots)
             plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', capture.decode(errors='replace'))
-            assert re.search(r'\(init \d+ ms\)', plain), f'{label}: completed initialization timings missing from welcome resources'
+            assert '(init ' not in plain, f'{label}: completed initialization timings leaked into the welcome screen'
             assert 'show full startup help' not in plain, f'{label}: native onboarding flashed before pi-ui'
             assert '●'.encode() in capture, f'{label}: logo animation missing'
             assert len({item['frame'] for item in snapshots if item['active']}) >= 4

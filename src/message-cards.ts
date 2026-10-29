@@ -3,7 +3,8 @@ import { AssistantMessageComponent, UserMessageComponent, type ExtensionAPI, typ
 import { type Component } from "@earendil-works/pi-tui";
 import { cardEdge, cardRail } from "./card-frame.ts";
 
-const HOOKS_KEY = "@rokiy/pi-ui:message-card-hooks";
+// A new generation also installs the fix over hooks retained by a running Pi.
+const HOOKS_KEY = "@rokiy/pi-ui:message-card-hooks:v2";
 // Shell-integration zones belong around the complete card, including its timestamp.
 // eslint-disable-next-line no-control-regex
 const ZONE = /\x1b\]133;([ABC])(?:\x07|\x1b\\)/g;
@@ -20,7 +21,7 @@ interface Host {
   chatContainer: { children: Component[] };
   streamingComponent?: NativeMessage;
 }
-interface Binding { theme?: () => Theme }
+interface Binding { theme?: () => Theme; pending: Map<NativeMessage, Message> }
 interface Hooks {
   owners: WeakMap<object, Binding>;
   patched: WeakSet<object>;
@@ -125,10 +126,17 @@ export function installMessageCards(pi: ExtensionAPI, interactivePrototype: obje
   const globals = globalThis as Record<string, unknown>;
   const shared = (globals[HOOKS_KEY] ??= { owners: new WeakMap(), patched: new WeakSet(), decorate: decorateMessage }) as Hooks;
   shared.decorate = decorateMessage;
-  const binding: Binding = {};
+  const binding: Binding = { pending: new Map() };
   shared.owners.set(owner, binding);
   pi.on("session_start", (_event, ctx) => {
-    binding.theme = ctx.hasUI && (!("mode" in ctx) || ctx.mode === "tui") ? () => ctx.ui.theme : undefined;
+    // Old cards can repaint after their session ctx expires; retain only the UI theme source.
+    const ui = ctx.hasUI && (!("mode" in ctx) || ctx.mode === "tui") ? ctx.ui : undefined;
+    binding.theme = ui ? () => ui.theme : undefined;
+    // /reload rebuilds the transcript before session_start supplies its UI context.
+    if (binding.theme) {
+      for (const [component, message] of binding.pending) shared.decorate(component, message, binding.theme);
+    }
+    binding.pending.clear();
   });
   if (shared.patched.has(interactivePrototype)) return;
   const methods = interactivePrototype as Record<string, unknown>;
@@ -139,10 +147,11 @@ export function installMessageCards(pi: ExtensionAPI, interactivePrototype: obje
     const binding = bindingFor(shared, this);
     const first = this.chatContainer.children.length;
     const result = originalAdd.call(this, message, ...args);
-    if (binding?.theme && (message.role === "user" || message.role === "assistant")) {
+    if (binding && (message.role === "user" || message.role === "assistant")) {
       for (const component of this.chatContainer.children.slice(first)) {
         if (component instanceof UserMessageComponent || component instanceof AssistantMessageComponent) {
-          shared.decorate(component as unknown as NativeMessage, message, binding.theme);
+          if (binding.theme) shared.decorate(component as unknown as NativeMessage, message, binding.theme);
+          else binding.pending.set(component as unknown as NativeMessage, message);
         }
       }
     }

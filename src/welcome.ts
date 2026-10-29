@@ -19,12 +19,7 @@ import {
   createPackageVersionResolver,
   type PackageVersionResolver,
 } from "./resource-versions.ts";
-import {
-  PI_LOGO,
-  formatStartupDuration,
-  getStartupProgress,
-  startupDurationForLabel,
-} from "./startup/progress.ts";
+import { PI_LOGO, getStartupProgress } from "./startup/progress.ts";
 import { renderStartupProgress } from "./startup/view.ts";
 import {
   formatVersionChange,
@@ -1166,17 +1161,14 @@ class WelcomeHeader implements Component {
 
   private resourcesWithUpdates(): WelcomeResources | undefined {
     if (!this.resources) return this.resources;
-    const startup = this.startup?.snapshot();
     const updateLabel = (item: string): string => {
-      const duration = startup && !startup.active ? startupDurationForLabel(item, startup) : undefined;
-      const timing = duration === undefined ? "" : `  (init ${formatStartupDuration(duration)})`;
       const versioned = item.match(/^(.*?) {2}v(\S+)(.*)$/);
-      if (!versioned) return item + timing;
+      if (!versioned) return item;
       const [, name, current, revision] = versioned;
       const latest = this.latestPackageVersions.get(name);
-      return (latest && isNewerVersion(latest, current)
+      return latest && isNewerVersion(latest, current)
         ? `${name}  v${current}->v${latest.replace(/^v/, "")}${revision}`
-        : item) + timing;
+        : item;
     };
     return {
       ...this.resources,

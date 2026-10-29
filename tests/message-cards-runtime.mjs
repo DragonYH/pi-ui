@@ -18,7 +18,7 @@ while (!existsSync(resolve(dist, "core/extensions/loader.js"))) {
 }
 const hostImport = (path) => import(pathToFileURL(resolve(dist, path)).href);
 const { loadExtensions } = await hostImport("core/extensions/loader.js");
-const { InteractiveMode, AssistantMessageComponent, ExtensionRunner, initTheme, getMarkdownTheme } = await hostImport("index.js");
+const { InteractiveMode, AssistantMessageComponent, UserMessageComponent, ExtensionRunner, initTheme, getMarkdownTheme } = await hostImport("index.js");
 const { Container, visibleWidth } = await import(pathToFileURL(resolve(dist, "../node_modules/@earendil-works/pi-tui/dist/index.js")).href);
 const { dispatchMouseEvent } = await import(pathToFileURL(resolve(dist, "../node_modules/@earendil-works/pi-tui/dist/tui.js")).href);
 const themes = await hostImport("modes/interactive/theme/theme.js");
@@ -102,16 +102,44 @@ for (const name of ["dark", "light", "catppuccin-dark"]) {
   foreign.addMessageToChat({ role: "user", content: "unmodified session", timestamp });
   assert(!foreign.chatContainer.render(100).join("\n").includes("╭"), "sessions without pi-ui must retain native rendering");
 }
-// Reload swaps the owner and implementation without stacking host hooks.
+// Native /reload replaces the runner and rebuilds history before session_start.
 const beforeHook = InteractiveMode.prototype.addMessageToChat;
-const reloaded = await loadExtensions([resolve(repo, "src/index.ts")], repo);
-assert.deepEqual(reloaded.errors, []);
-await reloaded.extensions[0].handlers.get("session_start")[0]({ type: "session_start", reason: "reload" }, ctx);
-assert.equal(InteractiveMode.prototype.addMessageToChat, beforeHook);
-const resumed = host(reloaded.extensions);
-resumed.addMessageToChat({ role: "user", content: "Reloaded user", timestamp });
-assert.equal(check(resumed.chatContainer.children.at(-1), 100, true).filter((line) => line.includes("╭")).length, 1);
+const resumed = host();
+runner.setUIContext(resumed.createExtensionUIContext(), "tui");
+let activeRunner = runner;
+let activeContext = runner.createContext();
+await loaded.extensions[0].handlers.get("session_start")[0]({ type: "session_start", reason: "startup" }, activeContext);
+const history = [
+  { role: "user", content: "Reloaded user", timestamp },
+  assistant([{ type: "text", text: "Reloaded reply" }]),
+];
+for (const message of history) resumed.addMessageToChat(message);
+for (let reload = 0; reload < 2; reload++) {
+  // TUI repaints can still render the old transcript after its runner is invalidated.
+  activeRunner.invalidate();
+  assert.throws(() => activeContext.ui, /ctx is stale/);
+  const retained = resumed.chatContainer.children.filter((component) => component instanceof AssistantMessageComponent || component instanceof UserMessageComponent);
+  for (const width of [52, 100, 160]) {
+    check(retained[0], width, true);
+    check(retained[1], width, false);
+  }
+  const reloaded = await loadExtensions([resolve(repo, "src/index.ts")], repo);
+  assert.deepEqual(reloaded.errors, []);
+  activeRunner = new ExtensionRunner(reloaded.extensions, reloaded.runtime, repo, {}, {});
+  activeRunner.setUIContext(resumed.createExtensionUIContext(), "tui");
+  activeContext = activeRunner.createContext();
+  resumed.session.extensionRunner = activeRunner;
+  resumed.chatContainer.clear();
+  for (const message of history) resumed.addMessageToChat(message);
+  await reloaded.extensions[0].handlers.get("session_start")[0]({ type: "session_start", reason: "reload" }, activeContext);
+  assert.equal(InteractiveMode.prototype.addMessageToChat, beforeHook);
+  const [user, reply] = resumed.chatContainer.children.filter((component) => component.render(100).some((line) => stripVTControlCharacters(line).trim()));
+  assert.equal(check(user, 100, true).filter((line) => line.includes("╭")).length, 1);
+  assert.equal(check(reply, 100, false).filter((line) => line.includes("╭")).length, 1);
+  resumed.addMessageToChat({ role: "user", content: "New message after reload", timestamp });
+  check(resumed.chatContainer.children.at(-1), 100, true);
+}
 mkdirSync(resolve(repo, ".pi"), { recursive: true });
 writeFileSync(resolve(repo, ".pi/message-cards-preview.ansi"), capture.join("\n"));
-console.log("Installed Pi: left/right half-width cards, recorded corner timestamps, three themes, seven widths, native thinking clicks, streaming/final updates, output padding, unowned sessions and reload passed.");
+console.log("Installed Pi: left/right half-width cards, recorded corner timestamps, three themes, seven widths, native thinking clicks, streaming/final updates, output padding, unowned sessions, stale-context redraws and reload passed.");
 console.log("Preview: .pi/message-cards-preview.ansi");

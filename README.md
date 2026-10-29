@@ -87,7 +87,7 @@ Run `pi` normally after installation. No additional entry point or command alias
 - Only the `session_start` emission snapshot puts pi-ui first, installing the welcome screen, editor, and footer before other extensions initialize. Other extensions keep their relative order, and other event ordering stays unchanged.
 - The trail moves every 80 ms. Each extension appears when its initialization begins, showing its current state and elapsed time.
 - Timings accumulate all of an extension's `session_start` handlers. Extensions without a handler are identified as such and take 0 ms; earlier module imports and factory registration are excluded.
-- Startup completion stops the animation and restores the welcome screen, keeping `(init 640 ms)` next to matched names or versions. Errors retain Pi's native reporting and also appear in the progress list.
+- Startup completion stops the animation and restores the welcome screen without initialization times beside extension names or versions. Errors retain Pi's native reporting and also appear in the progress list.
 - `/reload` and session changes start a fresh timing run, shutdown clears timers, narrow terminals stack the logo and list, and noninteractive modes skip the animation.
 
 **Module import boundary:** Pi imports extensions and runs their factories before it creates the terminal UI and emits `session_start`. Its loader provides no event that hands the remaining import queue to a plugin, so initialization progress cannot reconstruct those earlier timings. This project does not rewrite installed Pi files or global settings and has no alternative startup command. Synchronous code can block animation until it returns control to the event loop.
