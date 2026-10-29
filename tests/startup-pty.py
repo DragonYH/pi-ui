@@ -18,6 +18,41 @@ import time
 REPO = Path(__file__).resolve().parent.parent
 SCRATCH = REPO / '.pi'
 SCRATCH.mkdir(exist_ok=True)
+SKILLS = [
+    'alpha', 'beta', 'debug-pi-status-refresh', 'recover-github-git-transport',
+    'verify-archive-interoperability-and-artifacts', 'verify-canvas-pointer-input',
+    'verify-native-rust-without-cargo', 'verify-pi-working-token-usage',
+    'verify-rust-module-with-existing-dependencies', 'verify-subagent-output',
+    'verify-pi-message-cards', 'verify-pi-tool-card-renderers', 'verify-pi-ui-startup-resources',
+]
+PACKAGES = [
+    '@fixture/rpiv-ask-user-question', '@fixture/rpiv-todo', '@fixture/rpiv-btw',
+    '@fixture/pi-hermes-memory', '@fixture/pi-balance', '@fixture/pi-hypa',
+    '@fixture/pi-tps-extensions',
+]
+
+
+def resource_rows(header, title):
+    lines = header.splitlines()
+    start = next(index for index, line in enumerate(lines) if f'[{title}]' in line)
+    end = next((index for index in range(start + 1, len(lines)) if re.search(r'\[(Skills|Extensions)\]|Source paths ·', lines[index])), len(lines))
+    return lines[start + 1:end]
+
+
+def resource_labels(rows):
+    offsets = sorted({match.start() for row in rows for match in re.finditer('• ', row)})
+    labels = []
+    for index, offset in enumerate(offsets):
+        items = []
+        end = offsets[index + 1] if index + 1 < len(offsets) else None
+        for row in rows:
+            cell = row[offset:end].rstrip()
+            if cell.startswith('• '):
+                items.append(cell[2:])
+            elif cell.strip() and items:
+                items[-1] += cell.strip()
+        labels.extend(items)
+    return labels
 
 
 def digest(path):
@@ -89,8 +124,16 @@ export default function(pi) {
         extensions = [str(observer), str(slow), str(REPO / 'src/index.ts')]
         if failing:
             extensions += [str(broken)]
-        (agent / 'settings.json').write_text(json.dumps({'lastChangelogVersion': '1.4.0', 'checkForUpdates': False, 'extensions': extensions}))
-        for name in ['alpha', 'beta']:
+        (agent / 'settings.json').write_text(json.dumps({
+            'lastChangelogVersion': '1.4.0', 'checkForUpdates': False,
+            'extensions': extensions, 'packages': [f'npm:{name}' for name in PACKAGES],
+        }))
+        for name in PACKAGES:
+            package = agent / 'npm/node_modules' / name
+            package.mkdir(parents=True)
+            (package / 'package.json').write_text(json.dumps({'name': name, 'version': '1.2.3', 'pi': {'extensions': ['./index.ts']}}))
+            (package / 'index.ts').write_text('export default function() {}\n')
+        for name in SKILLS:
             skill = agent / 'skills' / name
             skill.mkdir(parents=True)
             (skill / 'SKILL.md').write_text(f'---\nname: {name}\ndescription: fixture {name}\n---\nFixture.\n')
@@ -134,14 +177,19 @@ export default function(pi) {
                         if not failing:
                             resources = resource_snapshots[-1]
                             assert not resources['nativeAttached'], f'{label}: native comma list returned after {commands[:commands_sent]}'
-                            assert '[Skills] 2' in resources['header'], resources
-                            assert all(f'• {name}' in resources['header'] for name in ['alpha', 'beta']), resources
+                            assert f'[Skills] {len(SKILLS)}' in resources['header'], resources
+                            skill_rows = resource_rows(resources['header'], 'Skills')
+                            package_rows = resource_rows(resources['header'], 'Extensions')
+                            assert sorted(resource_labels(skill_rows)) == sorted(SKILLS), resources
+                            assert sorted(re.sub(r'\s+', '', label) for label in resource_labels(package_rows)) == sorted(f'{name}v1.2.3' for name in PACKAGES), resources
+                            for title, rows in [('Skills', skill_rows), ('Extensions', package_rows)]:
+                                assert any(row.count('• ') >= 2 for row in rows), f'{label}: {title} fell back to one column after {commands[:commands_sent]}'
                             assert re.search(r'\[Extensions\] \d+', resources['header']), resources
                             assert all(name in resources['header'] for name in ['observer', 'slow-plugin']), resources
                             for width, layout in resources['layouts'].items():
                                 assert layout['maxWidth'] <= int(width), f'{label}: welcome overflow at {width} columns: {layout}'
                                 assert layout['topPadding'] == ['', ''], f'{label}: welcome lost top spacing: {layout}'
-                                margin = max(2, (int(width) - 120) // 2)
+                                margin = 4 if int(width) >= 100 else 2
                                 assert layout['leftPadding'] >= margin, f'{label}: welcome lost side spacing: {layout}'
                         if commands_sent < len(commands):
                             os.write(master, (commands[commands_sent] + '\r').encode())

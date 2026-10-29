@@ -132,7 +132,7 @@ test("startup layout fits narrow and wide terminals and preserves full extension
   assert(wide.join("\n").includes("━"));
   assert(wide.join("\n").includes(longName));
   assert.deepEqual(wide.slice(0, 2), ["", ""], "the header has breathing room above it");
-  assert(wide.filter((line) => line.trim()).every((line) => line.startsWith(" ".repeat(20))), "the panel stays centered at its maximum width");
+  assert(wide.filter((line) => line.trim()).every((line) => line.startsWith(" ".repeat(4))), "the panel preserves its outer margin as it expands");
   assert(!wide.join("\n").includes("╭"), "the wordmark has no surrounding box");
   assert.notDeepEqual(wide, renderStartupProgress({ ...snapshot, frame: 10 }, 160), "the sweep advances between frames");
   assert(!renderStartupProgress({ ...snapshot, active: false }, 100).join("\n").includes("━"));

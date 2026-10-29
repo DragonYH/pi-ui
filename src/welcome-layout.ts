@@ -4,7 +4,6 @@ export const GRID_COLUMN_GAP = 4;
 export const MIN_RESOURCE_COLUMN_WIDTH = 44;
 export const WELCOME_TOP_PADDING = 2;
 export const WELCOME_BOTTOM_PADDING = 1;
-const MAX_WELCOME_WIDTH = 120;
 
 export function getWelcomeLayout(width: number): {
   width: number;
@@ -13,7 +12,7 @@ export function getWelcomeLayout(width: number): {
   wide: boolean;
 } {
   const margin = width >= 100 ? 4 : width >= 40 ? 2 : width >= 18 ? 1 : 0;
-  const innerWidth = Math.max(1, Math.min(MAX_WELCOME_WIDTH, width - margin * 2));
+  const innerWidth = Math.max(1, width - margin * 2);
   const brandWidth = Math.max(BRAND_COLUMN_WIDTH, Math.min(30, Math.floor(innerWidth * 0.28)));
   return {
     width: innerWidth,

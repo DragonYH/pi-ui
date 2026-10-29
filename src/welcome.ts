@@ -727,8 +727,8 @@ function appendColumnRows(
       ? sharedColumnCount
       : desiredColumns;
   let columnCount = Math.min(requestedColumns, fittingColumns);
-  // Prefer fewer columns to losing a skill name or an extension's version.
-  while (columnCount > 1) {
+  // Prefer two readable columns before wrapping long names within each cell.
+  while (columnCount > 2) {
     const rowCount = Math.ceil(items.length / columnCount);
     const widths = getColumnWidths(listWidth, columnCount);
     if (items.every((item, index) =>
@@ -751,14 +751,19 @@ function appendColumnRows(
   for (let row = 0; row < rowsPerColumn; row += 1) {
     const cells = cellWidths.map((cellWidth, column) => {
       const item = items[column * rowsPerColumn + row];
-      if (!item) return " ".repeat(cellWidth);
+      if (!item) return [];
       const aligned = formatResourceItem(item, theme, nameWidths[column]);
       const label = visibleWidth(aligned) <= cellWidth - 2
         ? aligned : formatResourceItem(item, theme);
-      const cell = `${theme.fg("dim", "• ")}${label}`;
-      return cell + " ".repeat(Math.max(0, cellWidth - visibleWidth(cell)));
+      return wrapPrefixed(theme.fg("dim", "• "), label, cellWidth);
     });
-    lines.push(`  ${cells.join(" ".repeat(LIST_COLUMN_GAP))}`.trimEnd());
+    const height = Math.max(...cells.map((cell) => cell.length));
+    for (let line = 0; line < height; line += 1) {
+      const parts = cells.map((cell, column) =>
+        padToWidth(cell[line] ?? "", cellWidths[column]),
+      );
+      lines.push(`  ${parts.join(" ".repeat(LIST_COLUMN_GAP))}`.trimEnd());
+    }
   }
 }
 
@@ -1079,7 +1084,7 @@ function renderNarrowWelcome(
   );
 }
 
-function renderWelcomeHeader(
+export function renderWelcomeHeader(
   resources: WelcomeResources | undefined,
   theme: Theme,
   width: number,
@@ -1113,15 +1118,23 @@ class WelcomeHeader implements Component {
   private readonly startup = getStartupProgress();
   private readonly unsubscribeStartup: (() => void) | undefined;
   private disposed = false;
+  private readonly tui: TUI;
+  private readonly theme: Theme;
+  private readonly bridge: ResourceBridge | undefined;
+  private readonly resolveVersion: PackageVersionResolver;
 
   constructor(
-    private readonly tui: TUI,
-    private readonly theme: Theme,
-    private readonly bridge: ResourceBridge | undefined,
-    private readonly resolveVersion: PackageVersionResolver,
+    tui: TUI,
+    theme: Theme,
+    bridge: ResourceBridge | undefined,
+    resolveVersion: PackageVersionResolver,
     forceInitialRender: boolean,
     cwd = process.cwd(),
   ) {
+    this.tui = tui;
+    this.theme = theme;
+    this.bridge = bridge;
+    this.resolveVersion = resolveVersion;
     this.unsubscribeStartup = this.startup?.subscribe(() => {
       this.clearRenderCache();
       this.tui.requestRender();
