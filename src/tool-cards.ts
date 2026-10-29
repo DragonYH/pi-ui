@@ -201,10 +201,10 @@ class CallCard extends CardContent {
     for (const row of extra) {
       this.mouseRows.set(output.length, { x: 2, y: row, width: nativeWidth, height: lines.length });
       const line = argumentBody ? callText(lines[row], theme, "", command) : lines[row];
-      output.push(rail(line, width, theme, context.isError));
+      output.push(rail(line, width, theme, context.isError ? "error" : FRAME_COLOR));
     }
     if (!shared.hasResult) {
-      if (shared.hiddenCallRows) output.push(rail(theme.fg("muted", `… ${shared.hiddenCallRows}+ lines hidden`), width, theme, context.isError));
+      if (shared.hiddenCallRows) output.push(rail(theme.fg("muted", `… ${shared.hiddenCallRows}+ lines hidden`), width, theme, context.isError ? "error" : FRAME_COLOR));
       output.push(edge(width, "╰", "╯", theme.fg("dim", expansionHint(context.expanded, rightWidth)), theme, context.isError ? "error" : FRAME_COLOR, "right"));
     }
     return output;
@@ -288,20 +288,20 @@ class ResultCard extends CardContent {
     const tail = this.isTail() && !context.isError;
     const preview = count === 0 ? [] : tail && !showAll ? rows.slice(-count) : rows.slice(0, count);
     const hidden = state(context).hiddenCallRows + (showAll ? 0 : hideRead ? this.lineCount : Math.max(0, rows.length - preview.length) + (native ? 0 : Math.max(0, this.lineCount - PREVIEW_LINES)));
-    const hiddenHint = hidden ? rail(theme.fg("muted", `… ${hidden}+ lines hidden`), width, theme, context.isError) : "";
+    const hiddenHint = hidden ? rail(theme.fg("muted", `… ${hidden}+ lines hidden`), width, theme, context.isError ? "error" : FRAME_COLOR) : "";
     const output = preview.map((row, index) => {
       if (native) this.mouseRows.set(index + (hiddenHint && tail ? 1 : 0), { x: 2, y: row, width: innerWidth, height: lines.length });
-      return rail(lines[row], width, theme, context.isError);
+      return rail(lines[row], width, theme, context.isError ? "error" : FRAME_COLOR);
     });
     if (hiddenHint) {
       if (tail) output.unshift(hiddenHint);
       else output.push(hiddenHint);
     }
     if (this.warning && !native) {
-      output.push(...new Text(theme.fg("warning", this.warning), 0, 0).render(innerWidth).map((line) => rail(line, width, theme, context.isError)));
+      output.push(...new Text(theme.fg("warning", this.warning), 0, 0).render(innerWidth).map((line) => rail(line, width, theme, context.isError ? "error" : FRAME_COLOR)));
     }
     if (this.images && !native) {
-      output.push(rail(theme.fg("muted", `${this.images} image${this.images === 1 ? "" : "s"}`), width, theme, context.isError));
+      output.push(rail(theme.fg("muted", `${this.images} image${this.images === 1 ? "" : "s"}`), width, theme, context.isError ? "error" : FRAME_COLOR));
     }
     const hint = expansionHint(options.expanded, rightColumnWidth(width));
     output.push(edge(width, "╰", "╯", theme.fg("dim", hint), theme, context.isError ? "error" : FRAME_COLOR, "right"));

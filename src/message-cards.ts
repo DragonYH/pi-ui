@@ -95,9 +95,10 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
     }
     const gap = user ? 0 : 1;
     const prefix = " ".repeat(x);
-    const header = cardEdge(lane, "╭", "╮", theme.fg("mdHeading", theme.bold(user ? "You" : "Assistant")), theme);
-    const body = rows.slice(start, end).map((line) => cardRail(line, lane, theme));
-    const footer = cardEdge(lane, "╰", "╯", theme.fg("dim", time), theme, "borderAccent", user ? "right" : "left");
+    const color = user ? "thinkingHigh" : "success";
+    const header = cardEdge(lane, "╭", "╮", theme.fg(color, theme.bold(user ? "You" : "Assistant")), theme, color);
+    const body = rows.slice(start, end).map((line) => cardRail(line, lane, theme, color));
+    const footer = cardEdge(lane, "╰", "╯", theme.fg("dim", time), theme, color, user ? "right" : "left");
     layout = { x: x + 2, y: gap + 1, width: innerWidth, height: native.length, start, count: end - start };
     return [...(gap ? [""] : []), zoneStart + prefix + header, ...body.map((line) => prefix + line), zoneEnd + prefix + footer];
   };
