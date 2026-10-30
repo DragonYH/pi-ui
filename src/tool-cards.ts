@@ -1,7 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { keyText, type ExtensionAPI, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { cardEdge as edge, cardRail as rail } from "./card-frame.ts";
+import { CardFrameCache, sameValues, cardEdge as edge, cardRail as rail } from "./card-frame.ts";
 
 // Structural types keep loading safe on older Pi versions without the resolver API.
 type Renderers = Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult">;
@@ -64,9 +64,9 @@ function expansionKey(): string {
   return keyText("app.tools.expand");
 }
 
-function rightColumnWidth(width: number): number {
+function rightColumnWidth(width: number, keys: string): number {
   // Default: 13 display columns, matching "done · 100 ms" and "ctrl+o expand".
-  const columns = Math.max(13, visibleWidth(expansionKey()) + 7);
+  const columns = Math.max(13, visibleWidth(keys) + 7);
   return width >= columns + 12 ? columns : 0;
 }
 
@@ -79,8 +79,7 @@ function alignedFields(label: string, value: string, width: number): string {
     + " ".repeat(Math.max(0, valueWidth - visibleWidth(right))) + right;
 }
 
-function expansionHint(expanded: boolean, width = 0): string {
-  const keys = expansionKey();
+function expansionHint(expanded: boolean, width: number, keys: string): string {
   const label = keys || "click to";
   const action = expanded ? "fold" : keys ? "expand" : "open";
   return label + " ".repeat(Math.max(1, width - visibleWidth(label) - visibleWidth(action))) + action;
@@ -102,11 +101,14 @@ function callText(line: string, theme: Theme, name = "", command = false): strin
 }
 
 function contentLines(name: string, component: Component | undefined, width: number): string[] {
-  if (name !== "edit") return component?.render(width) ?? [];
   // Native edit rebuilds its colored Box on completion; the card owns the background.
-  if (component instanceof Box) component.setBgFn(undefined);
+  if (name === "edit" && component instanceof Box) component.setBgFn(undefined);
+  return component?.render(width) ?? [];
+}
+
+function styleLines(name: string, lines: string[]): string[] {
   // Inverse diff words become solid blocks against a transparent card. Underline them.
-  return (component?.render(width) ?? []).map((line) => line.replaceAll("\x1b[7m", "\x1b[4m").replaceAll("\x1b[27m", "\x1b[24m"));
+  return name === "edit" ? lines.map((line) => line.replaceAll("\x1b[7m", "\x1b[4m").replaceAll("\x1b[27m", "\x1b[24m")) : lines;
 }
 
 function trimmedRows(lines: string[]): number[] {
@@ -136,20 +138,31 @@ function hasControls(component: NativeComponent | undefined): boolean {
 
 abstract class CardContent implements Component {
   inner?: NativeComponent;
+  protected frame = new CardFrameCache();
   protected mouseRows = new Map<number, { x: number; y: number; width: number; height: number }>();
 
   protected get interactive(): boolean { return hasControls(this.inner); }
   get focused(): boolean { return this.inner?.focused ?? false; }
-  set focused(value: boolean) { if (this.inner && "focused" in this.inner) this.inner.focused = value; }
+  set focused(value: boolean) {
+    this.frame.invalidate();
+    if (this.inner && "focused" in this.inner) this.inner.focused = value;
+  }
   get wantsKeyRelease(): boolean | undefined { return this.inner?.wantsKeyRelease; }
-  handleInput(data: string): void { this.inner?.handleInput?.(data); }
+  handleInput(data: string): void {
+    this.frame.invalidate();
+    this.inner?.handleInput?.(data);
+  }
   handleMouse(event: MouseEvent): MouseResult | undefined {
     const row = this.mouseRows.get(event.y);
     if (!row || event.x < row.x || event.x >= row.x + row.width) return undefined;
+    this.frame.invalidate();
     return this.inner?.handleMouse?.({ ...event, x: event.x - row.x, y: row.y, width: row.width, height: row.height });
   }
   abstract render(width: number): string[];
-  invalidate(): void { this.inner?.invalidate(); }
+  invalidate(): void {
+    this.frame.invalidate();
+    this.inner?.invalidate();
+  }
 }
 
 class CallCard extends CardContent {
@@ -159,6 +172,7 @@ class CallCard extends CardContent {
   private fallback = new Text("", 0, 0);
 
   update(name: string, args: unknown, theme: Theme, context: Context, render?: Renderers["renderCall"]): this {
+    this.frame.invalidate();
     this.context = context;
     this.theme = theme;
     this.name = name;
@@ -173,29 +187,40 @@ class CallCard extends CardContent {
   }
 
   render(width: number): string[] {
-    this.mouseRows.clear();
     // Reserve the last terminal column for the scrollbar.
     width = Math.max(0, width - 1);
-    if (width <= 0) return [];
+    if (width <= 0) {
+      this.frame.invalidate();
+      this.mouseRows.clear();
+      return [];
+    }
     const { context, theme } = this;
-    const current = status(context);
-    const rightWidth = rightColumnWidth(width);
-    const badge = rightWidth ? alignedFields(current.label, duration(context.durationMs) || "—", rightWidth) : "";
+    const shared = state(context);
+    const keys = expansionKey();
+    const rightWidth = rightColumnWidth(width, keys);
     const titleWidth = Math.max(1, width - 8 - (rightWidth ? rightWidth + 3 : 0));
     const command = this.name === "bash" || this.name === "powershell" || /(?:^|_)shell$/.test(this.name);
-    const argumentBody = !this.interactive && (this.inner === this.fallback || command);
+    const interactive = this.interactive;
+    const argumentBody = !interactive && (this.inner === this.fallback || command);
     const nativeWidth = argumentBody ? titleWidth : Math.max(1, width - 4);
-    const lines = contentLines(this.name, this.inner, nativeWidth);
+    const native = contentLines(this.name, this.inner, nativeWidth);
+    const inputs = [width, theme, keys, interactive, context.expanded, context.isError, context.isPartial,
+      context.executionStarted, context.argsComplete, context.durationMs, shared.hasResult];
+    const cached = this.frame.get(inputs, native);
+    if (cached) return cached;
+    this.mouseRows.clear();
+    const current = status(context);
+    const badge = rightWidth ? alignedFields(current.label, duration(context.durationMs) || "—", rightWidth) : "";
+    const lines = styleLines(this.name, native);
     const rows = trimmedRows(lines);
-    const title = theme.fg(current.color, current.icon) + " " + truncateToWidth(callText(this.interactive ? clean(this.name) : lines[rows[0]] ?? "", theme, this.name, command), titleWidth);
+    const title = theme.fg(current.color, current.icon) + " " + truncateToWidth(callText(interactive ? clean(this.name) : lines[rows[0]] ?? "", theme, this.name, command), titleWidth);
     const gap = width - 6 - visibleWidth(title) - visibleWidth(badge);
     const header = rightWidth && gap >= 3
       ? title + theme.fg(context.isError ? "error" : FRAME_COLOR, ` ${"─".repeat(gap - 2)} `) + theme.fg(current.color, badge)
       : title;
     const output = [edge(width, "╭", "╮", header, theme, context.isError ? "error" : FRAME_COLOR)];
-    const body = this.interactive ? rows : rows.slice(1).filter((row) => stripVTControlCharacters(lines[row]).trim());
-    const extra = context.expanded || this.interactive ? body : body.slice(0, this.name === "edit" ? PREVIEW_LINES : 1);
-    const shared = state(context);
+    const body = interactive ? rows : rows.slice(1).filter((row) => stripVTControlCharacters(lines[row]).trim());
+    const extra = context.expanded || interactive ? body : body.slice(0, this.name === "edit" ? PREVIEW_LINES : 1);
     // Native edit puts its output diff in renderCall; other call bodies are arguments.
     shared.hiddenCallRows = this.name === "edit" ? body.length - extra.length : 0;
     for (const row of extra) {
@@ -205,9 +230,9 @@ class CallCard extends CardContent {
     }
     if (!shared.hasResult) {
       if (shared.hiddenCallRows) output.push(rail(theme.fg("muted", `… ${shared.hiddenCallRows}+ lines hidden`), width, theme, context.isError ? "error" : FRAME_COLOR));
-      output.push(edge(width, "╰", "╯", theme.fg("dim", expansionHint(context.expanded, rightWidth)), theme, context.isError ? "error" : FRAME_COLOR, "right"));
+      output.push(edge(width, "╰", "╯", theme.fg("dim", expansionHint(context.expanded, rightWidth, keys)), theme, context.isError ? "error" : FRAME_COLOR, "right"));
     }
-    return output;
+    return this.frame.set(inputs, native, output);
   }
 }
 
@@ -224,46 +249,43 @@ class ResultCard extends CardContent {
   private lineCount = 0;
   private images = 0;
   private warning = "";
-  private parsedContent?: Result["content"];
-  private parsedDetails?: unknown;
+  private parsedText?: string[];
   private output = "";
   private previewHead = "";
   private previewTail = "";
-  private wasPartial = true;
 
   update(name: string, result: Result, options: Options, theme: Theme, context: Context, render?: Renderers["renderResult"]): this {
+    this.frame.invalidate();
     state(context).hasResult = true;
     this.name = name;
     this.context = context;
     this.theme = theme;
     this.options = options;
-    // Completed results are reused when expanding, resizing, or redrawing the footer.
-    // Partial content can be mutated in place, so it always gets parsed again.
-    if (options.isPartial || this.wasPartial || this.parsedContent !== result.content || this.parsedDetails !== result.details) {
-      this.output = result.content.filter((block) => block.type === "text").map((block) => clean(block.text)).join("\n").trimEnd();
+    // Snapshot text values rather than array identities: partial and final updates
+    // can reuse their content array and mutate its blocks in place.
+    const text = result.content.filter((block) => block.type === "text").map((block) => block.text);
+    if (!sameValues(this.parsedText, text)) {
+      this.output = text.map(clean).join("\n").trimEnd();
       const logicalLines = this.output ? this.output.split("\n") : [];
       this.lineCount = logicalLines.length;
       this.previewHead = logicalLines.slice(0, PREVIEW_LINES).join("\n");
       this.previewTail = logicalLines.slice(-PREVIEW_LINES).join("\n");
-      this.images = result.content.filter((block) => block.type === "image").length;
-      const details = result.details as {
-        truncation?: { truncated?: boolean }; fullOutputPath?: string;
-        matchLimitReached?: number; entryLimitReached?: number; resultLimitReached?: number; linesTruncated?: boolean;
-      } | undefined;
-      this.warning = [
-        details?.truncation?.truncated ? "output truncated" : "",
-        details?.matchLimitReached ? `${details.matchLimitReached} matches limit` : "",
-        details?.entryLimitReached ? `${details.entryLimitReached} entries limit` : "",
-        details?.resultLimitReached ? `${details.resultLimitReached} results limit` : "",
-        details?.linesTruncated ? "some lines truncated" : "",
-        typeof details?.fullOutputPath === "string" ? `full output: ${clean(details.fullOutputPath)}` : "",
-      ].filter(Boolean).join(" · ");
-      this.parsedContent = result.content;
-      this.parsedDetails = result.details;
+      this.parsedText = text;
     }
-    this.wasPartial = options.isPartial;
-    const previewText = options.expanded ? this.output : this.isTail() && !context.isError ? this.previewTail : this.previewHead;
-    this.text.setText(theme.fg(context.isError ? "error" : "toolOutput", previewText));
+    this.images = result.content.filter((block) => block.type === "image").length;
+    const details = result.details as {
+      truncation?: { truncated?: boolean }; fullOutputPath?: string;
+      matchLimitReached?: number; entryLimitReached?: number; resultLimitReached?: number; linesTruncated?: boolean;
+    } | undefined;
+    this.warning = [
+      details?.truncation?.truncated ? "output truncated" : "",
+      details?.matchLimitReached ? `${details.matchLimitReached} matches limit` : "",
+      details?.entryLimitReached ? `${details.entryLimitReached} entries limit` : "",
+      details?.resultLimitReached ? `${details.resultLimitReached} results limit` : "",
+      details?.linesTruncated ? "some lines truncated" : "",
+      typeof details?.fullOutputPath === "string" ? `full output: ${clean(details.fullOutputPath)}` : "",
+    ].filter(Boolean).join(" · ");
+    this.updateText();
     // Built-in shell renderers may own timers while streaming; use our fast text
     // preview until they settle. Specialized renderers keep their content and controls.
     this.useNative = Boolean(render && (!BUILT_INS.has(name) || options.expanded && !options.isPartial));
@@ -274,16 +296,26 @@ class ResultCard extends CardContent {
   }
 
   render(width: number): string[] {
-    this.mouseRows.clear();
     width = Math.max(0, width - 1);
-    if (width <= 0) return [];
+    if (width <= 0) {
+      this.frame.invalidate();
+      this.mouseRows.clear();
+      return [];
+    }
     const { context, theme, options } = this;
     const innerWidth = Math.max(1, width - 4);
     const native = this.useNative && this.inner;
     const hideRead = this.name === "read" && !context.isError && !options.expanded;
-    const lines = hideRead ? [] : contentLines(this.name, native || this.text, innerWidth);
+    const content = hideRead ? [] : contentLines(this.name, native || this.text, innerWidth);
+    const interactive = Boolean(native && this.interactive);
+    const keys = expansionKey();
+    const inputs = [width, theme, keys, interactive, context.isError, options.expanded, options.isPartial, state(context).hiddenCallRows];
+    const cached = this.frame.get(inputs, content);
+    if (cached) return cached;
+    this.mouseRows.clear();
+    const lines = styleLines(this.name, content);
     const rows = trimmedRows(lines);
-    const showAll = options.expanded || Boolean(native && this.interactive);
+    const showAll = options.expanded || interactive;
     const count = showAll ? rows.length : hideRead ? 0 : PREVIEW_LINES;
     const tail = this.isTail() && !context.isError;
     const preview = count === 0 ? [] : tail && !showAll ? rows.slice(-count) : rows.slice(0, count);
@@ -303,18 +335,23 @@ class ResultCard extends CardContent {
     if (this.images && !native) {
       output.push(rail(theme.fg("muted", `${this.images} image${this.images === 1 ? "" : "s"}`), width, theme, context.isError ? "error" : FRAME_COLOR));
     }
-    const hint = expansionHint(options.expanded, rightColumnWidth(width));
+    const hint = expansionHint(options.expanded, rightColumnWidth(width, keys), keys);
     output.push(edge(width, "╰", "╯", theme.fg("dim", hint), theme, context.isError ? "error" : FRAME_COLOR, "right"));
-    return output;
+    return this.frame.set(inputs, content, output);
   }
 
   private isTail(): boolean {
     return this.name === "bash" || this.name === "powershell" || /(?:^|_)shell$/.test(this.name);
   }
 
+  private updateText(): void {
+    const preview = this.options.expanded ? this.output : this.isTail() && !this.context.isError ? this.previewTail : this.previewHead;
+    this.text.setText(this.theme.fg(this.context.isError ? "error" : "toolOutput", preview));
+  }
+
   invalidate(): void {
-    this.text.invalidate();
-    this.inner?.invalidate();
+    super.invalidate();
+    this.updateText();
   }
 }
 

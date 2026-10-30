@@ -1,7 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { AssistantMessageComponent, UserMessageComponent, type ExtensionAPI, type Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { cardEdge, cardRail } from "./card-frame.ts";
+import { CardFrameCache, cardEdge, cardRail } from "./card-frame.ts";
 
 // A new generation also installs the fix over hooks retained by a running Pi.
 const HOOKS_KEY = "@rokiy/pi-ui:message-card-hooks:v2";
@@ -9,12 +9,10 @@ const HOOKS_KEY = "@rokiy/pi-ui:message-card-hooks:v2";
 // eslint-disable-next-line no-control-regex
 const ZONE = /\x1b\]133;([ABC])(?:\x07|\x1b\\)/g;
 interface Message { role: string; timestamp?: number }
-interface MouseEvent { x: number; y: number; width: number; height: number }
 interface NativeMessage extends Component {
   lastMessage?: Message;
   children?: Component[];
   setOutputPad?(padding: number): void;
-  handleMouse?(event: MouseEvent): unknown;
 }
 interface Host {
   session: { extensionRunner: { extensions: { messageRenderers?: Map<string, unknown> }[] } };
@@ -57,6 +55,12 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
   const user = message.role === "user";
   const nativeRender = component.render;
   const nativeMouse = component.handleMouse;
+  const nativeInvalidate = component.invalidate;
+  const frame = new CardFrameCache();
+  component.invalidate = function() {
+    frame.invalidate();
+    nativeInvalidate.call(this);
+  };
   const setOutputPad = component.setOutputPad;
   if (setOutputPad) {
     component.setOutputPad = function() { setOutputPad.call(this, 0); };
@@ -66,15 +70,24 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
   let lastTimestamp: number | undefined;
   let time = "—";
   component.render = function(width) {
-    layout = undefined;
     const available = Math.max(0, Math.floor(width) - 1);
     const maxWidth = Math.floor(available * 2 / 3);
-    if (!maxWidth) return [];
+    if (!maxWidth) {
+      frame.invalidate();
+      layout = undefined;
+      return [];
+    }
     // The outer frame owns padding and background. Native rebuilds can replace Markdown.
     if (user) for (const child of this.children ?? []) prepareUserContent(child);
     // Wrap once at the cap; every visible row will also fit the measured frame.
     const nativeWidth = Math.max(1, maxWidth - 4);
     const native = nativeRender.call(this, nativeWidth);
+    const theme = getTheme();
+    const timestamp = this.lastMessage?.timestamp ?? message.timestamp;
+    const inputs = [width, theme, timestamp];
+    const cached = frame.get(inputs, native);
+    if (cached) return cached;
+    layout = undefined;
     let zoneStart = "";
     let zoneEnd = "";
     const rows = native.map((line) => line.replace(ZONE, (escape: string, kind: string) => {
@@ -87,9 +100,7 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
     while (start < end && !stripVTControlCharacters(rows[start]).trim()) start++;
     while (end > start && !stripVTControlCharacters(rows[end - 1]).trim()) end--;
     // Tool-call-only assistant messages have no visible message bubble.
-    if (start === end) return [];
-    const theme = getTheme();
-    const timestamp = this.lastMessage?.timestamp ?? message.timestamp;
+    if (start === end) return frame.set(inputs, native, []);
     if (timestamp !== lastTimestamp) {
       lastTimestamp = timestamp;
       time = clock(timestamp);
@@ -108,10 +119,11 @@ export function decorateMessage(component: NativeMessage, message: Message, getT
     const body = content.map((line) => cardRail(truncateToWidth(line, innerWidth, ""), cardWidth, theme, color));
     const footer = cardEdge(cardWidth, "╰", "╯", theme.fg("dim", time), theme, color, user ? "right" : "left");
     layout = { x: x + 2, y: gap + 1, width: innerWidth, nativeWidth, height: native.length, start, count: end - start };
-    return [...(gap ? [""] : []), zoneStart + prefix + header, ...body.map((line) => prefix + line), zoneEnd + prefix + footer];
+    return frame.set(inputs, native, [...(gap ? [""] : []), zoneStart + prefix + header, ...body.map((line) => prefix + line), zoneEnd + prefix + footer]);
   };
   if (nativeMouse) component.handleMouse = function(event) {
     if (!layout || event.x < layout.x || event.x >= layout.x + layout.width || event.y < layout.y || event.y >= layout.y + layout.count) return undefined;
+    frame.invalidate();
     return nativeMouse.call(this, { ...event, x: event.x - layout.x, y: event.y - layout.y + layout.start, width: layout.nativeWidth, height: layout.height });
   };
 }

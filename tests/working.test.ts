@@ -80,8 +80,13 @@ test("working row counts text, thinking and tool arguments across tool turns, th
   await f.runner.emit({ type: "message_update", message,
     assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "abcd", partial: message } });
   assert.equal(f.messages.at(-1), "Working... (↓ 5 tokens · 3s)", "full block ends do not recount deltas");
-  await f.end(37, "toolUse");
-  await f.runner.emit({ type: "turn_end", turnIndex: 0, message: assistant(37, "toolUse"), toolResults: [] });
+  const completed = await f.end(37, "toolUse");
+  await f.runner.emitBoundary({
+    type: "turn_end", turnIndex: 0, message: completed, toolResults: [],
+    messageEntryId: "fixture-assistant-0", toolResultEntryIds: [], outcome: "completed",
+  }, () => ({
+    contextEntries: [], contextMessages: [completed], llmMessages: [completed], pendingMessages: [], canContinue: true,
+  }));
   t.mock.timers.tick(2_000);
   await f.runner.emit({ type: "turn_start", turnIndex: 1, timestamp: Date.now() });
   await f.begin();

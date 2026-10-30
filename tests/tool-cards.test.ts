@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Container, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { registerToolCards, resolveToolCard, type ToolCardContext, type ToolCardResolver } from "../src/tool-cards.ts";
 
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
@@ -10,7 +10,7 @@ function context(overrides: Partial<ToolCardContext> = {}): ToolCardContext {
   return {
     args: { path: "src/中文-🧪.ts" }, toolCallId: "fixture", invalidate() {}, lastComponent: undefined,
     state: {}, cwd: "/work", executionStarted: true, argsComplete: true, isPartial: false,
-    expanded: false, showImages: true, isError: false, ...overrides,
+    expanded: false, showImages: true, isError: false, durationMs: undefined, outputPad: 0, ...overrides,
   };
 }
 function fixture(name: string, text: string, overrides: Parameters<typeof context>[0] = {}) {
@@ -355,7 +355,11 @@ test("framed interactive renderers retain controls, keyboard focus, and mouse co
   type Interactive = Component & { focused: boolean; handleMouse(event: { x: number; y: number; width: number; height: number }): unknown };
   for (const [component, row] of [[call, 1], [result, 0]] as const) {
     const card = component as Interactive;
-    assert(card.render(80).join("\n").includes("five"), "controls are never clipped by the preview");
+    const warm = card.render(80);
+    assert(warm.join("\n").includes("five"), "controls are never clipped by the preview");
+    assert.equal(card.render(80), warm, "a cache hit retains the mouse row map");
+    card.render(0);
+    card.render(80);
     assert.deepEqual(card.handleMouse({ x: 5, y: row, width: 80, height: 20 }), { handled: true, focus: true });
     assert.deepEqual(clicked, { x: 3, y: 1, width: 75, height: 8 });
     card.handleInput!("enter");
@@ -405,4 +409,164 @@ test("partial content mutations update previews, and registration safely skips o
   let registered: ToolCardResolver | undefined;
   assert.equal(registerToolCards({ registerToolRenderer(resolver: ToolCardResolver) { registered = resolver; } } as unknown as ExtensionAPI), true);
   assert.equal(registered, resolveToolCard);
+});
+
+test("unchanged historical tools reuse their frame without repeating styling and layout", () => {
+  let styling = 0;
+  let childRenders = 0;
+  const counted = { ...theme, fg: (_color: string, text: string) => { styling++; return text; } } as Theme;
+  const child = (rows: string[]): Component => ({
+    render() { childRenders++; return rows.slice(); },
+    invalidate() {},
+  });
+  const renderer = resolveToolCard("external", () => ({
+    renderCall: () => child(["external fixture", "argument"]),
+    renderResult: () => child(["first", "second", "third", "fourth", "hidden"]),
+  }))!;
+  const ctx = context();
+  const call = renderer.renderCall!({}, counted, ctx);
+  const result = renderer.renderResult!({ content: [], details: {} }, { expanded: false, isPartial: false }, counted, ctx);
+  const firstCall = call.render(100);
+  const firstResult = result.render(100);
+  const initialStyling = styling;
+  for (let frame = 0; frame < 20; frame++) {
+    assert.equal(call.render(100), firstCall);
+    assert.equal(result.render(100), firstResult);
+  }
+  assert.equal(styling, initialStyling, "animation redraws perform no card styling, rail or edge reconstruction");
+  assert.equal(childRenders, 42, "native children still render so their own state and mouse layouts stay current");
+  call.invalidate();
+  result.invalidate();
+  assert.notEqual(call.render(100), firstCall);
+  assert.notEqual(result.render(100), firstResult);
+  assert(styling > initialStyling, "explicit invalidation rebuilds both frames even with unchanged child rows");
+});
+
+test("cached tools follow width, arguments, expansion, state and theme invalidation", () => {
+  let color = 31;
+  const mutableTheme = { ...theme, fg: (_color: string, text: string) => `\x1b[${color}m${text}\x1b[39m` } as Theme;
+  const renderer = resolveToolCard("external", () => undefined)!;
+  const args = { path: "before.ts", extra: "first\nsecond\nthird" };
+  let ctx = context({ args, isPartial: true, executionStarted: false, argsComplete: false });
+  let call = renderer.renderCall!(args, mutableTheme, ctx);
+  const update = (changes: Partial<ToolCardContext> = {}) => {
+    ctx = { ...ctx, ...changes, lastComponent: call };
+    call = renderer.renderCall!(args, mutableTheme, ctx);
+    const lines = call.render(100);
+    assert.equal(call.render(100), lines);
+    return stripVTControlCharacters(lines.join("\n"));
+  };
+  assert(update().includes("preparing"));
+  assert(update({ argsComplete: true }).includes("queued"));
+  assert(update({ executionStarted: true }).includes("running"));
+  assert(update({ isPartial: false, durationMs: 1234 }).includes("done"));
+  assert(update({ isError: true }).includes("fail"));
+  args.path = "after.ts";
+  assert(update().includes("after.ts"), "in-place argument changes are applied on renderer updates");
+  const expanded = update({ expanded: true });
+  assert(expanded.includes("third") && expanded.includes("fold"));
+  const collapsed = update({ expanded: false });
+  assert(collapsed.split("\n").length < expanded.split("\n").length);
+  assert(!collapsed.includes("fold"));
+  const wide = call.render(100);
+  assert(call.render(32).every((line) => visibleWidth(line) === 31));
+  const restored = call.render(100);
+  assert.deepEqual(restored, wide);
+  assert.notEqual(restored, wide, "the cache retains only the latest width");
+  color = 34;
+  call.invalidate();
+  const recolored = call.render(100).join("\n");
+  assert(recolored.includes("\x1b[34m") && !recolored.includes("\x1b[31m"));
+});
+
+test("cached results accept in-place partial and completed output and detail changes", () => {
+  const renderer = resolveToolCard("external", () => undefined)!;
+  let color = 31;
+  const mutableTheme = { ...theme, fg: (_color: string, text: string) => `\x1b[${color}m${text}\x1b[39m` } as Theme;
+  let ctx = context({ isPartial: true });
+  const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: "progress 1" }];
+  const details = { truncation: { truncated: false }, fullOutputPath: "" };
+  let result: Component | undefined;
+  function update(partial: boolean) {
+    ctx = { ...ctx, isPartial: partial, lastComponent: result };
+    result = renderer.renderResult!({ content, details }, { expanded: false, isPartial: partial }, mutableTheme, ctx);
+    const lines = result.render(100);
+    assert.equal(result.render(100), lines);
+    return stripVTControlCharacters(lines.join("\n"));
+  }
+  assert(update(true).includes("progress 1"));
+  content[0] = { type: "text", text: "progress 2" };
+  assert(update(true).includes("progress 2"));
+  content[0].text = "final 3";
+  assert(update(false).includes("final 3"));
+  content[0].text = "revised final 4\nsecond\nthird\nfourth\nfifth";
+  details.truncation.truncated = true;
+  details.fullOutputPath = "/tmp/revised.log";
+  content.push({ type: "image", data: "", mimeType: "image/png" });
+  const revised = update(false);
+  assert(revised.includes("revised final 4") && revised.includes("1+ lines hidden"));
+  assert(revised.includes("output truncated") && revised.includes("/tmp/revised.log") && revised.includes("1 image"));
+  color = 34;
+  result!.invalidate();
+  const recolored = result!.render(100).join("\n");
+  assert(recolored.includes("\x1b[34mrevised final 4"), "invalidation rebuilds themed preview text too");
+  assert(!recolored.includes("\x1b[31m"));
+});
+
+test("cached edit halves track shared completion and hidden rows after nested updates", () => {
+  const text = new Text("edit fixture.ts\n" + "+ changed\n".repeat(5), 0, 0);
+  const nested = new Container();
+  nested.addChild(text);
+  const renderer = resolveToolCard("edit", () => ({ renderCall: () => nested, renderResult: () => new Text("", 0, 0) }))!;
+  const ctx = context();
+  const call = renderer.renderCall!({}, theme, ctx);
+  const pending = call.render(80);
+  assert.equal(call.render(80), pending);
+  assert(pending.join("\n").includes("1+ lines hidden") && pending.at(-1)!.includes("╰"));
+  const result = renderer.renderResult!({ content: [], details: {} }, { expanded: false, isPartial: false }, theme, ctx);
+  assert(!call.render(80).join("\n").includes("╰"), "arrival of a result removes the cached pending footer");
+  const initial = result.render(80);
+  assert(initial.join("\n").includes("1+ lines hidden"));
+  text.setText("edit fixture.ts\n" + "+ revised\n".repeat(9));
+  nested.invalidate();
+  assert(call.render(80).join("\n").includes("+ revised"));
+  const revised = result.render(80);
+  assert.notEqual(revised, initial);
+  assert(revised.join("\n").includes("5+ lines hidden"), "the result frame follows the call's new omission count");
+  assert.equal(result.render(80), revised);
+});
+
+test("cached controls keep direct child updates, keyboard, focus and resized mouse layouts", () => {
+  let value = "initial";
+  let clicked: unknown;
+  const rows = ["", "initial", "last", ""];
+  const native = {
+    focused: false, wantsKeyRelease: true,
+    render() { rows[1] = `${value}${this.focused ? " focused" : ""}`; return rows; },
+    invalidate() {},
+    handleInput(data: string) { value = data; },
+    handleMouse(event: unknown) { clicked = event; value = "clicked"; return { handled: true, focus: true }; },
+  };
+  const renderer = resolveToolCard("question", () => ({ renderResult: () => native }))!;
+  const component = renderer.renderResult!({ content: [], details: {} }, { expanded: false, isPartial: false }, theme, context());
+  const card = component as Component & { focused: boolean; wantsKeyRelease: boolean; handleMouse(event: { x: number; y: number; width: number; height: number }): unknown };
+  const initial = card.render(80);
+  assert.equal(card.render(80), initial);
+  value = "async update";
+  native.invalidate();
+  assert(card.render(80).join("\n").includes("async update"), "mutations to a reused child row array cannot hide behind the cache");
+  card.handleInput!("typed");
+  assert(card.render(80).join("\n").includes("typed"));
+  card.focused = true;
+  assert(native.focused && card.wantsKeyRelease);
+  assert(card.render(80).join("\n").includes("typed focused"));
+  const resized = card.render(44);
+  assert.equal(card.render(44), resized);
+  assert.deepEqual(card.handleMouse({ x: 5, y: 0, width: 44, height: resized.length }), { handled: true, focus: true });
+  assert.deepEqual(clicked, { x: 3, y: 1, width: 39, height: 4 });
+  assert(card.render(44).join("\n").includes("clicked focused"));
+  card.render(0);
+  assert.equal(card.handleMouse({ x: 5, y: 0, width: 44, height: 0 }), undefined);
+  card.render(44);
+  assert.deepEqual(card.handleMouse({ x: 5, y: 0, width: 44, height: 4 }), { handled: true, focus: true });
 });

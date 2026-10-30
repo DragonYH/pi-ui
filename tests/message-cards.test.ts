@@ -54,7 +54,7 @@ test("cards size to their longest displayed line, including wide and styled text
     const component = user ? new UserMessageComponent(`**${longest}**\nshort`) : new AssistantMessageComponent(assistant(`**${longest}**\nshort`));
     wrap(component, user ? "user" : "assistant");
     for (const width of [80, 100, 160]) {
-      const frame = assertCard(component.render(width), width, user, visibleWidth(longest) + 4 + (user ? 0 : 1));
+      const frame = assertCard(component.render(width), width, user, visibleWidth(longest) + 4);
       assert(frame.join("\n").includes(longest));
       assert(!frame.join("\n").includes("..."), "discarding native padding must not truncate visible content");
     }
@@ -68,7 +68,7 @@ test("long lines wrap at the two-thirds cap without losing content", () => {
     wrap(component, user ? "user" : "assistant");
     for (const width of [40, 52, 80, 100, 101, 160]) {
       const cap = Math.floor((width - 1) * 2 / 3);
-      const frame = assertCard(component.render(width), width, user, cap - (cap % 2) - (user ? 0 : 1));
+      const frame = assertCard(component.render(width), width, user, cap - (cap % 2));
       const body = frame.slice(1, -1).map((line) => line.trimStart().slice(2, -2).trim()).join("");
       assert.equal(body, text);
     }
@@ -107,6 +107,7 @@ test("message frames preserve terminal zones, links and local mouse coordinates"
   };
   wrap(component, "user");
   const rendered = component.render(100);
+  assert.equal(component.render(100), rendered, "cached message frames preserve their mouse layout and shell zones");
   assert(rendered[0].startsWith("\x1b]133;A\x07"));
   assert(rendered.at(-1)!.startsWith("\x1b]133;B\x07\x1b]133;C\x07"));
   assert(rendered[1].includes("\x1b]8;;https://example.com\x07"));
@@ -130,4 +131,68 @@ test("missing timestamps stay unknown and native error content is retained", () 
   const rendered = component.render(80).join("\n");
   assert(rendered.includes("Error: fixture failure"));
   assert(rendered.includes("╰─ — "));
+});
+
+test("history message redraws reuse framing without restyling native Markdown", () => {
+  let styling = 0;
+  const counted = { ...theme, fg: (_color: string, text: string) => { styling++; return text; } } as Theme;
+  for (const user of [true, false]) {
+    const component = user ? new UserMessageComponent("**History** 中文 🧪\n" + "body ".repeat(80))
+      : new AssistantMessageComponent(assistant("**History** 中文 🧪\n\n```ts\nconst value = 42;\n```"));
+    decorateMessage(component as unknown as Parameters<typeof decorateMessage>[0], { role: user ? "user" : "assistant", timestamp }, () => counted);
+    const first = component.render(100);
+    const initialStyling = styling;
+    for (let frame = 0; frame < 20; frame++) assert.equal(component.render(100), first);
+    assert.equal(styling, initialStyling, "unchanged native rows skip message measurement, truncation, and frame styling");
+    component.invalidate();
+    const refreshed = component.render(100);
+    assert.notEqual(refreshed, first);
+    assert.deepEqual(refreshed, first);
+    assert(styling > initialStyling);
+    const narrow = component.render(52);
+    assert.notEqual(narrow, refreshed);
+    assert.equal(component.render(52), narrow);
+    assertCard(narrow, 52, user);
+  }
+});
+
+test("message frame cache observes mutable rows, timestamp and theme changes", () => {
+  let color = 31;
+  let currentTheme = { ...theme, fg: (_color: string, text: string) => `\x1b[${color}m${text}\x1b[39m` } as Theme;
+  let childRenders = 0;
+  let invalidations = 0;
+  const rows = ["first"];
+  const component = {
+    lastMessage: { role: "assistant", timestamp },
+    render(_width: number) { childRenders++; return rows; },
+    invalidate() { invalidations++; },
+  };
+  decorateMessage(component, component.lastMessage, () => currentTheme);
+  const first = component.render(100);
+  assert.equal(component.render(100), first);
+  assert.equal(childRenders, 2, "native children remain live under the frame cache");
+  rows[0] = "second";
+  const changed = component.render(100);
+  assert(changed.join("\n").includes("second"));
+  assert.notEqual(changed, first, "a native component may mutate the same returned row array");
+  component.lastMessage.timestamp += 1000;
+  assert(component.render(100).at(-1)!.includes("12:34:57"));
+  const beforeTheme = component.render(100);
+  currentTheme = { ...theme, fg: (_color: string, text: string) => `\x1b[32m${text}\x1b[39m` } as Theme;
+  const newTheme = component.render(100);
+  assert.notEqual(newTheme, beforeTheme);
+  assert(newTheme.join("\n").includes("\x1b[32m"));
+  currentTheme = { ...theme, fg: (_color: string, text: string) => `\x1b[${color}m${text}\x1b[39m` } as Theme;
+  component.render(100);
+  color = 34;
+  component.invalidate();
+  const recolored = component.render(100);
+  assert.equal(invalidations, 1);
+  assert(recolored.join("\n").includes("\x1b[34m") && !recolored.join("\n").includes("\x1b[31m"));
+  rows.length = 0;
+  const empty = component.render(100);
+  assert.deepEqual(empty, []);
+  assert.equal(component.render(100), empty);
+  rows.push("visible again");
+  assert(component.render(100).join("\n").includes("visible again"));
 });
